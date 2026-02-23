@@ -37,6 +37,45 @@ export function createApp(service) {
     }
   });
 
+  app.post("/api/mcp/recall-context", async (req, res) => {
+    try {
+      const result = await service.recallContext(req.body);
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/mcp/set-context-profile", async (req, res) => {
+    try {
+      const result = await service.setContextProfile(req.body);
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/mcp/get-context-profile", async (req, res) => {
+    try {
+      const result = await service.getContextProfile({
+        profile_id: req.query.profile_id ? String(req.query.profile_id) : undefined,
+        conversation_key: req.query.conversation_key ? String(req.query.conversation_key) : undefined,
+      });
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/mcp/list-context-profiles", async (_req, res) => {
+    try {
+      const result = await service.listContextProfiles();
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.get("/api/graph/connections", async (req, res) => {
     const nodeId = String(req.query.nodeId || "");
     const limit = Number(req.query.limit || 8);
@@ -59,6 +98,18 @@ export function createApp(service) {
   app.get("/api/graph/insights", async (_req, res) => {
     try {
       const result = await service.getInsights();
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/graph/search-datapoints", async (req, res) => {
+    const query = String(req.query.query || req.query.q || "");
+    const limit = Number(req.query.limit || 20);
+    const type = String(req.query.type || "all");
+    try {
+      const result = await service.searchDatapoints({ query, limit, type });
       res.json(result);
     } catch (error) {
       res.status(500).json({ error: error.message });

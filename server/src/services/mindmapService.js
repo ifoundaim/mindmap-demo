@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { ingestInsight } from "../ingestion/ingest.js";
-import { LogInsightSchema, SessionBootstrapSchema, LinkNodesSchema } from "../helix/schema.js";
+import {
+  LogInsightSchema,
+  SessionBootstrapSchema,
+  LinkNodesSchema,
+  RecallContextSchema,
+  SetContextProfileSchema,
+  GetContextProfileSchema,
+} from "../helix/schema.js";
 import {
   scoreConnections,
   findBridgeNodes,
@@ -8,6 +15,18 @@ import {
   buildTimeline,
 } from "../analytics/graphAnalytics.js";
 import { metrics } from "../observability/metrics.js";
+import { jaccardSimilarity } from "../lib/text.js";
+import { classifyContextProfiles } from "../ingestion/classifyProfiles.js";
+import { DEFAULT_CONTEXT_PROFILES } from "../domain/constants.js";
+
+async function maybeAwait(value) {
+  return Promise.resolve(value);
+}
+
+function isExplicitFullContext(text) {
+  const t = String(text || "").toLowerCase();
+  return t.includes("full context") || t.includes("complete context") || t.includes("all context");
+}
 
 export class MindMapService {
   constructor(store) {
@@ -17,6 +36,14 @@ export class MindMapService {
   async sessionBootstrap(payload) {
     metrics.increment("tool_calls");
     const parsed = SessionBootstrapSchema.parse(payload);
+    const profiles = await maybeAwait(this.store.listProfiles());
+    const profileAssignment = await classifyContextProfiles({
+      summary: parsed.message,
+      tags: parsed.tags || [],
+      relatedNodeIds: parsed.related_node_ids || [],
+      profiles,
+    });
+
     const result = await ingestInsight(this.store, {
       conversation_key: parsed.conversation_key,
       turn_key: parsed.turn_key,
@@ -25,9 +52,28 @@ export class MindMapService {
       source: "mcp_initial",
       tags: parsed.tags || [],
       related_node_ids: parsed.related_node_ids || [],
+      assigned_profiles: profileAssignment.assignedProfiles,
+      profile_scores: profileAssignment.profileScores,
+      classification_confidence: profileAssignment.classificationConfidence,
+      needs_review: profileAssignment.needsReview,
     });
     if (result.inserted) metrics.increment("events_inserted");
     else metrics.increment("events_deduped");
+    if (result.inserted) metrics.increment("profile_assignments_total");
+    if (profileAssignment.needsReview) metrics.increment("needs_review_total");
+
+    // Set initial conversation profile if absent.
+    const existingConversationProfile = await maybeAwait(
+      this.store.getConversationProfile(parsed.conversation_key),
+    );
+    if (!existingConversationProfile) {
+      await maybeAwait(
+        this.store.setConversationProfile(
+          parsed.conversation_key,
+          profileAssignment.assignedProfiles[0] || "full_context",
+        ),
+      );
+    }
 
     // Optional structured context extraction as incremental entries.
     let contextInserts = 0;
@@ -50,6 +96,7 @@ export class MindMapService {
       session_id: `${parsed.conversation_key}::${parsed.turn_key}`,
       captured_items: Number(result.inserted) + contextInserts,
       skipped_duplicates: Number(!result.inserted),
+      profile_assignment: profileAssignment,
       result,
     };
   }
@@ -57,6 +104,14 @@ export class MindMapService {
   async logInsight(payload) {
     metrics.increment("tool_calls");
     const parsed = LogInsightSchema.parse(payload);
+    const profiles = await maybeAwait(this.store.listProfiles());
+    const profileAssignment = await classifyContextProfiles({
+      summary: parsed.message,
+      tags: parsed.tags || [],
+      relatedNodeIds: parsed.related_node_ids || [],
+      profiles,
+    });
+
     const result = await ingestInsight(this.store, {
       conversation_key: parsed.conversation_key,
       turn_key: parsed.turn_key,
@@ -65,10 +120,27 @@ export class MindMapService {
       source: "mcp_explicit",
       tags: parsed.tags || [],
       related_node_ids: parsed.related_node_ids || [],
+      assigned_profiles: profileAssignment.assignedProfiles,
+      profile_scores: profileAssignment.profileScores,
+      classification_confidence: profileAssignment.classificationConfidence,
+      needs_review: profileAssignment.needsReview,
     });
     if (result.inserted) metrics.increment("events_inserted");
     else metrics.increment("events_deduped");
-    return result;
+    if (result.inserted) metrics.increment("profile_assignments_total");
+    if (profileAssignment.needsReview) metrics.increment("needs_review_total");
+
+    const conversationProfile = await maybeAwait(this.store.getConversationProfile(parsed.conversation_key));
+    if (!conversationProfile && result.inserted) {
+      await maybeAwait(
+        this.store.setConversationProfile(
+          parsed.conversation_key,
+          profileAssignment.assignedProfiles[0] || "full_context",
+        ),
+      );
+    }
+
+    return { ...result, profile_assignment: profileAssignment };
   }
 
   async linkNodes(payload) {
@@ -181,5 +253,284 @@ export class MindMapService {
       timeline: buildTimeline(evidence),
       metrics: metrics.snapshot(),
     };
+  }
+
+  async recallContext(payload) {
+    metrics.increment("tool_calls");
+    const parsed = RecallContextSchema.parse(payload);
+
+    const query = parsed.query;
+    const nodes = this.store.listNodes();
+    const edges = this.store.listEdges();
+    const evidence = Array.from(this.store.evidence?.values?.() || []);
+
+    const scopedEvidenceBase = parsed.conversation_key
+      ? evidence.filter((e) => e.conversation_key === parsed.conversation_key)
+      : evidence;
+
+    let profileApplied = parsed.profile_id || null;
+    if (!profileApplied && parsed.conversation_key) {
+      profileApplied = await maybeAwait(this.store.getConversationProfile(parsed.conversation_key));
+    }
+    if (!profileApplied || isExplicitFullContext(parsed.query)) {
+      profileApplied = "full_context";
+      if (parsed.conversation_key) {
+        metrics.increment("profile_overrides_total");
+        await maybeAwait(this.store.setConversationProfile(parsed.conversation_key, profileApplied));
+      }
+    }
+
+    let profile = await maybeAwait(this.store.getProfile(profileApplied));
+    if (parsed.use_profile_filtering && profileApplied !== "full_context" && !profile) {
+      profileApplied = "full_context";
+      profile = await maybeAwait(this.store.getProfile(profileApplied));
+      metrics.increment("profile_overrides_total");
+    }
+
+    const profileTagFilter = new Set(((profile?.tags || []) || []).map((t) => String(t).toLowerCase()));
+    const profileNodeFilter = new Set(profile?.node_ids || []);
+    const profileEventFilter = new Set(profile?.event_ids || []);
+
+    const scopedEvidence = parsed.use_profile_filtering
+      ? scopedEvidenceBase.filter((e) => {
+          if (profileApplied === "full_context") return true;
+          const evidenceProfiles = new Set((e.assigned_profiles || []).map((p) => String(p).toLowerCase()));
+          if (evidenceProfiles.has(String(profileApplied).toLowerCase())) return true;
+          const evidenceTags = new Set((e.tags || []).map((t) => String(t).toLowerCase()));
+          for (const t of profileTagFilter) {
+            if (evidenceTags.has(t)) return true;
+          }
+          const rel = e.related_node_ids || [];
+          for (const nid of rel) {
+            if (profileNodeFilter.has(nid)) return true;
+          }
+          if (profileEventFilter.has(e.event_id)) return true;
+          return false;
+        })
+      : scopedEvidenceBase;
+
+    const constrainedNodeIds = new Set(parsed.node_ids || []);
+    const tagConstraints = new Set((parsed.tags || []).map((t) => t.toLowerCase()));
+
+    const candidates = nodes
+      .filter((n) => {
+        if (parsed.use_profile_filtering && profileApplied !== "full_context") {
+          const nodeTagsLower = new Set((n.tags || []).map((t) => String(t).toLowerCase()));
+          let profileHit = profileNodeFilter.has(n.id);
+          if (!profileHit) {
+            for (const t of profileTagFilter) {
+              if (nodeTagsLower.has(t)) {
+                profileHit = true;
+                break;
+              }
+            }
+          }
+          if (!profileHit) {
+            const relatedEvidenceForNode = scopedEvidence.filter((e) =>
+              (e.related_node_ids || []).includes(n.id),
+            );
+            const evidenceHit = relatedEvidenceForNode.some((e) => profileEventFilter.has(e.event_id));
+            if (!evidenceHit) return false;
+          }
+        }
+
+        if (constrainedNodeIds.size && !constrainedNodeIds.has(n.id)) return false;
+        if (!tagConstraints.size) return true;
+        const nodeTags = new Set((n.tags || []).map((t) => String(t).toLowerCase()));
+        for (const t of tagConstraints) {
+          if (nodeTags.has(t)) return true;
+        }
+        return false;
+      })
+      .map((node) => {
+        const nodeText = `${node.label} ${node.details || ""} ${(node.tags || []).join(" ")}`;
+        const nodeScore = jaccardSimilarity(query, nodeText);
+
+        const relatedEvidence = scopedEvidence.filter((e) => (e.related_node_ids || []).includes(node.id));
+        const semanticEvidence = scopedEvidence
+          .map((e) => ({
+            ...e,
+            sim: jaccardSimilarity(query, `${e.summary} ${e.raw_excerpt || ""}`),
+          }))
+          .filter((e) => e.sim >= 0.1)
+          .sort((a, b) => b.sim - a.sim);
+
+        const evidenceList = [...relatedEvidence, ...semanticEvidence]
+          .filter((e, idx, arr) => arr.findIndex((x) => x.event_id === e.event_id) === idx)
+          .slice(0, 3);
+
+        const evidenceBoost = evidenceList.length
+          ? Math.max(...evidenceList.map((e) => e.sim || jaccardSimilarity(query, e.summary))) * 0.35
+          : 0;
+        const relevance = Math.min(1, nodeScore + evidenceBoost);
+
+        const relationshipTypes = Array.from(
+          new Set(
+            edges
+              .filter((e) => e.from_id === node.id || e.to_id === node.id)
+              .map((e) => e.type),
+          ),
+        );
+
+        return {
+          node_id: node.id,
+          label: node.label,
+          relevance_score: relevance,
+          relationship_types: relationshipTypes,
+          summary: node.details || evidenceList[0]?.summary || "",
+          evidence: evidenceList.map((e) => ({
+            event_id: e.event_id,
+            timestamp: e.timestamp,
+            source: e.source,
+            excerpt: e.raw_excerpt || e.summary,
+          })),
+        };
+      })
+      .filter((x) => x.relevance_score > 0)
+      .sort((a, b) => b.relevance_score - a.relevance_score);
+
+    const matches = candidates.slice(0, parsed.top_k);
+    const matchedNodeIds = new Set(matches.map((m) => m.node_id));
+
+    const contradictions = parsed.include_contradictions
+      ? findContradictions(edges)
+          .filter((e) => matchedNodeIds.has(e.from_id) || matchedNodeIds.has(e.to_id))
+          .map((e) => ({
+            from_id: e.from_id,
+            to_id: e.to_id,
+            type: e.type,
+            weight: e.weight,
+            explanation: `${e.from_id} ${e.type} ${e.to_id}`,
+          }))
+      : [];
+
+    const recommendedActions = parsed.include_actions ? await this.recommendNextActions(parsed.top_k) : [];
+
+    if (parsed.use_profile_filtering && parsed.top_k > 0 && matches.length === 0) {
+      metrics.increment("profile_recall_misses_total");
+    }
+
+    return {
+      query,
+      matches,
+      contradictions,
+      recommended_actions: recommendedActions,
+      meta: {
+        profile_applied: profileApplied || "full_context",
+        top_k: parsed.top_k,
+        total_candidates: candidates.length,
+        dedupe_applied: true,
+      },
+    };
+  }
+
+  async setContextProfile(payload) {
+    metrics.increment("tool_calls");
+    const parsed = SetContextProfileSchema.parse(payload);
+    const profile = await maybeAwait(
+      this.store.setProfile(parsed.profile_id, {
+        profile_id: parsed.profile_id,
+        label: parsed.label,
+        mode: parsed.mode,
+        tags: parsed.tags,
+        node_ids: parsed.node_ids,
+        event_ids: parsed.event_ids,
+        include_full_context: parsed.include_full_context,
+      }),
+    );
+    if (parsed.conversation_key) {
+      await maybeAwait(this.store.setConversationProfile(parsed.conversation_key, parsed.profile_id));
+    }
+    return {
+      profile,
+      conversation_key: parsed.conversation_key || null,
+      profile_applied: parsed.profile_id,
+    };
+  }
+
+  async getContextProfile(payload) {
+    const parsed = GetContextProfileSchema.parse(payload);
+    if (parsed.profile_id) {
+      const profile = await maybeAwait(this.store.getProfile(parsed.profile_id));
+      return { profile, profile_applied: parsed.profile_id };
+    }
+    if (parsed.conversation_key) {
+      const profileId = await maybeAwait(this.store.getConversationProfile(parsed.conversation_key));
+      const profile = profileId ? await maybeAwait(this.store.getProfile(profileId)) : null;
+      return { profile, profile_applied: profileId || "full_context" };
+    }
+    return { profile: null, profile_applied: "full_context" };
+  }
+
+  async listContextProfiles() {
+    const profiles = await maybeAwait(this.store.listProfiles());
+    return { profiles: profiles?.length ? profiles : DEFAULT_CONTEXT_PROFILES };
+  }
+
+  async searchDatapoints({ query, limit = 20, type = "all" } = {}) {
+    const q = String(query || "").trim().toLowerCase();
+    const normalizedType = ["all", "nodes", "evidence"].includes(String(type || "").toLowerCase())
+      ? String(type || "").toLowerCase()
+      : "all";
+    const max = Number.isFinite(limit) ? Math.min(Math.max(Number(limit), 1), 100) : 20;
+    if (!q) return { query: "", type: normalizedType, matches: [] };
+
+    const nodes = normalizedType !== "evidence" ? await maybeAwait(this.store.listNodes()) : [];
+    const evidence =
+      normalizedType !== "nodes" ? Array.from(this.store.evidence?.values?.() || []) : [];
+
+    const nodeMatches = nodes.map((node) => {
+        const label = String(node.label || "");
+        const details = String(node.details || "");
+        const tags = node.tags || [];
+        const haystack = `${node.id} ${label} ${details} ${tags.join(" ")}`.toLowerCase();
+        if (!haystack.includes(q)) return null;
+
+        const score = Math.max(
+          jaccardSimilarity(q, label),
+          jaccardSimilarity(q, details),
+          jaccardSimilarity(q, tags.join(" ")),
+        );
+
+        return {
+          kind: "node",
+          node_id: node.id,
+          label,
+          tags,
+          summary: details.slice(0, 220),
+          score,
+        };
+      })
+      .filter(Boolean);
+
+    const evidenceMatches = evidence
+      .map((event) => {
+        const summary = String(event.summary || "");
+        const excerpt = String(event.raw_excerpt || "");
+        const tags = event.tags || [];
+        const haystack = `${event.event_id} ${summary} ${excerpt} ${tags.join(" ")}`.toLowerCase();
+        if (!haystack.includes(q)) return null;
+        const score = Math.max(
+          jaccardSimilarity(q, summary),
+          jaccardSimilarity(q, excerpt),
+          jaccardSimilarity(q, tags.join(" ")),
+        );
+        return {
+          kind: "evidence",
+          event_id: event.event_id,
+          label: event.turn_key || event.event_id,
+          tags,
+          summary: summary || excerpt,
+          related_node_ids: event.related_node_ids || [],
+          score,
+        };
+      })
+      .filter(Boolean);
+
+    const matches = [...nodeMatches, ...evidenceMatches]
+      .sort((a, b) => b.score - a.score || String(a.label || "").localeCompare(String(b.label || "")))
+      .slice(0, max);
+
+    return { query: q, type: normalizedType, matches };
   }
 }

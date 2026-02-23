@@ -69,4 +69,37 @@ export class HelixGraphStore extends InMemoryGraphStore {
     if (!response) return null;
     return response;
   }
+
+  async setProfile(profileId, profileData) {
+    const result = super.setProfile(profileId, profileData);
+    await this.runEndpoint("setContextProfile", result);
+    return result;
+  }
+
+  async getProfile(profileId) {
+    const local = super.getProfile(profileId);
+    if (local) return local;
+    const remote = await this.runEndpoint("getContextProfile", { profile_id: profileId });
+    return remote || null;
+  }
+
+  async listProfiles() {
+    const local = super.listProfiles();
+    const remote = await this.runEndpoint("listContextProfiles", {});
+    if (remote && Array.isArray(remote.profiles) && remote.profiles.length) return remote.profiles;
+    return local;
+  }
+
+  async setConversationProfile(conversationKey, profileId) {
+    const result = super.setConversationProfile(conversationKey, profileId);
+    await this.runEndpoint("setConversationProfile", result);
+    return result;
+  }
+
+  async getConversationProfile(conversationKey) {
+    const local = super.getConversationProfile(conversationKey);
+    if (local) return local;
+    const remote = await this.runEndpoint("getConversationProfile", { conversation_key: conversationKey });
+    return remote?.profile_id || null;
+  }
 }

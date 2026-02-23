@@ -5,6 +5,10 @@ export class Metrics {
       events_inserted: 0,
       events_deduped: 0,
       ingestion_failures: 0,
+      profile_assignments_total: 0,
+      profile_overrides_total: 0,
+      profile_recall_misses_total: 0,
+      needs_review_total: 0,
     };
   }
 

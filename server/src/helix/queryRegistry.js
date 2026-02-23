@@ -6,6 +6,11 @@ export const HELIX_SCHEMA_QUERIES = {
     findConnections: process.env.HELIX_ENDPOINT_FIND_CONNECTIONS || "FindConnections",
     recommendNextActions: process.env.HELIX_ENDPOINT_RECOMMEND_NEXT_ACTIONS || "RecommendNextActions",
     graphInsights: process.env.HELIX_ENDPOINT_GRAPH_INSIGHTS || "GraphInsights",
+    setContextProfile: process.env.HELIX_ENDPOINT_SET_CONTEXT_PROFILE || "SetContextProfile",
+    getContextProfile: process.env.HELIX_ENDPOINT_GET_CONTEXT_PROFILE || "GetContextProfile",
+    listContextProfiles: process.env.HELIX_ENDPOINT_LIST_CONTEXT_PROFILES || "ListContextProfiles",
+    setConversationProfile: process.env.HELIX_ENDPOINT_SET_CONVERSATION_PROFILE || "SetConversationProfile",
+    getConversationProfile: process.env.HELIX_ENDPOINT_GET_CONVERSATION_PROFILE || "GetConversationProfile",
   },
   createNodes: `
     QUERY CreateNode(

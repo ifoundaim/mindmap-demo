@@ -1,4 +1,5 @@
 import { uniqueLower } from "../lib/text.js";
+import { DEFAULT_CONTEXT_PROFILES } from "../domain/constants.js";
 
 function edgeKey(fromId, type, toId) {
   return `${fromId}::${type}::${toId}`;
@@ -10,6 +11,16 @@ export class InMemoryGraphStore {
     this.edges = new Map();
     this.evidence = new Map();
     this.eventByHash = new Map();
+    this.profiles = new Map();
+    this.conversationProfiles = new Map();
+
+    for (const profile of DEFAULT_CONTEXT_PROFILES) {
+      this.profiles.set(profile.profile_id, {
+        ...profile,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    }
   }
 
   upsertNode(node) {
@@ -54,7 +65,13 @@ export class InMemoryGraphStore {
     if (this.eventByHash.has(event.hash_signature)) {
       return { duplicate: true, existingEventId: this.eventByHash.get(event.hash_signature) };
     }
-    this.evidence.set(event.event_id, event);
+    this.evidence.set(event.event_id, {
+      ...event,
+      assigned_profiles: event.assigned_profiles || [],
+      profile_scores: event.profile_scores || {},
+      classification_confidence: event.classification_confidence || 0,
+      needs_review: Boolean(event.needs_review),
+    });
     this.eventByHash.set(event.hash_signature, event.event_id);
     return { duplicate: false, event };
   }
@@ -79,5 +96,35 @@ export class InMemoryGraphStore {
 
   listEdges() {
     return Array.from(this.edges.values());
+  }
+
+  setProfile(profileId, profileData) {
+    const existing = this.profiles.get(profileId);
+    const next = {
+      ...(existing || {}),
+      ...profileData,
+      profile_id: profileId,
+      updated_at: new Date().toISOString(),
+      created_at: existing?.created_at || new Date().toISOString(),
+    };
+    this.profiles.set(profileId, next);
+    return next;
+  }
+
+  getProfile(profileId) {
+    return this.profiles.get(profileId) || null;
+  }
+
+  listProfiles() {
+    return Array.from(this.profiles.values());
+  }
+
+  setConversationProfile(conversationKey, profileId) {
+    this.conversationProfiles.set(conversationKey, profileId);
+    return { conversation_key: conversationKey, profile_id: profileId };
+  }
+
+  getConversationProfile(conversationKey) {
+    return this.conversationProfiles.get(conversationKey) || null;
   }
 }

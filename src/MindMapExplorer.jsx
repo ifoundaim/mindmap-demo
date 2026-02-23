@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Hymn — 12-Month Mind Map Explorer (Interactive)
@@ -933,6 +933,25 @@ function exportVisibleSubtree(root, collapsedMap) {
   return prune(root);
 }
 
+function slugifyProfileId(input) {
+  return String(input || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function csvToList(input) {
+  return String(input || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function uniqueStrings(values) {
+  return Array.from(new Set((values || []).map((x) => String(x || "").trim()).filter(Boolean)));
+}
+
 // ---------------------------
 // 3) UI
 // ---------------------------
@@ -984,6 +1003,22 @@ export default function MindMapExplorer() {
   const [insights, setInsights] = useState({ top_bridges: [], contradictions: [], timeline: [] });
   const [actions, setActions] = useState([]);
   const [apiError, setApiError] = useState("");
+  const [profiles, setProfiles] = useState([]);
+  const [activeProfileId, setActiveProfileId] = useState("full_context");
+  const [recallData, setRecallData] = useState(null);
+  const [recallLoading, setRecallLoading] = useState(false);
+  const [customProfileName, setCustomProfileName] = useState("");
+  const [customProfileTags, setCustomProfileTags] = useState("");
+  const [customProfileNodeIds, setCustomProfileNodeIds] = useState("");
+  const [profileStatus, setProfileStatus] = useState("");
+  const [editorLabel, setEditorLabel] = useState("");
+  const [editorTags, setEditorTags] = useState("");
+  const [editorNodeIds, setEditorNodeIds] = useState([]);
+  const [editorEventIds, setEditorEventIds] = useState([]);
+  const [profileSearchKeyword, setProfileSearchKeyword] = useState("");
+  const [profileSearchType, setProfileSearchType] = useState("all");
+  const [profileSearchResults, setProfileSearchResults] = useState([]);
+  const [profileSearchLoading, setProfileSearchLoading] = useState(false);
 
   const svgRef = useRef(null);
   const dragging = useRef({ on: false, x: 0, y: 0, tx0: 0, ty0: 0 });
@@ -1023,6 +1058,17 @@ export default function MindMapExplorer() {
     return results.slice(0, 80);
   }, [flat, query, tagFilter]);
 
+  const refreshProfiles = useCallback(async () => {
+    const profileRes = await fetch(`${API_BASE}/api/mcp/list-context-profiles`);
+    if (!profileRes.ok) return;
+    const body = await profileRes.json();
+    const nextProfiles = body.profiles || [];
+    setProfiles(nextProfiles);
+    if (nextProfiles.length && !nextProfiles.find((p) => p.profile_id === activeProfileId)) {
+      setActiveProfileId(nextProfiles[0].profile_id);
+    }
+  }, [activeProfileId]);
+
   useEffect(() => {
     async function loadInsights() {
       try {
@@ -1037,13 +1083,14 @@ export default function MindMapExplorer() {
           const body = await actionsRes.json();
           setActions(body.actions || []);
         }
+        await refreshProfiles();
         setApiError("");
       } catch {
         setApiError("Graph API unavailable. Start `npm run dev:api` for relationship analytics.");
       }
     }
     loadInsights();
-  }, []);
+  }, [refreshProfiles]);
 
   useEffect(() => {
     async function loadConnections() {
@@ -1065,6 +1112,82 @@ export default function MindMapExplorer() {
     }
     loadConnections();
   }, [selectedId, edgeTypeFilter, overlayEnabled]);
+
+  useEffect(() => {
+    async function loadRecallContext() {
+      const q = query.trim();
+      if (!q) {
+        setRecallData(null);
+        return;
+      }
+      try {
+        setRecallLoading(true);
+        const response = await fetch(`${API_BASE}/api/mcp/recall-context`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            query: q,
+            profile_id: activeProfileId,
+            use_profile_filtering: true,
+            top_k: 8,
+            include_contradictions: true,
+            include_actions: true,
+            conversation_key: "mindmap-explorer-ui",
+          }),
+        });
+        if (!response.ok) return;
+        const body = await response.json();
+        setRecallData(body);
+      } catch {
+        setRecallData(null);
+      } finally {
+        setRecallLoading(false);
+      }
+    }
+    loadRecallContext();
+  }, [query, activeProfileId]);
+
+  useEffect(() => {
+    async function persistActiveProfile() {
+      if (!activeProfileId) return;
+      const selectedProfile = (profiles || []).find((p) => p.profile_id === activeProfileId);
+      if (!selectedProfile) return;
+      try {
+        await fetch(`${API_BASE}/api/mcp/set-context-profile`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            profile_id: selectedProfile.profile_id,
+            label: selectedProfile.label || selectedProfile.profile_id,
+            mode: selectedProfile.mode || "custom",
+            tags: selectedProfile.tags || [],
+            node_ids: selectedProfile.node_ids || [],
+            event_ids: selectedProfile.event_ids || [],
+            include_full_context: Boolean(selectedProfile.include_full_context),
+            conversation_key: "mindmap-explorer-ui",
+          }),
+        });
+      } catch {
+        // Profile persistence is best-effort for local UI sessions.
+      }
+    }
+    persistActiveProfile();
+  }, [activeProfileId, profiles]);
+
+  useEffect(() => {
+    const active = (profiles || []).find((p) => p.profile_id === activeProfileId);
+    if (!active) {
+      setEditorLabel("");
+      setEditorTags("");
+      setEditorNodeIds([]);
+      setEditorEventIds([]);
+      return;
+    }
+    setEditorLabel(active.label || active.profile_id);
+    setEditorTags((active.tags || []).join(", "));
+    setEditorNodeIds(uniqueStrings(active.node_ids || []));
+    setEditorEventIds(uniqueStrings(active.event_ids || []));
+  }, [activeProfileId, profiles]);
 
   function toggleCollapse(id) {
     setCollapsed((prev) => {
@@ -1137,6 +1260,116 @@ export default function MindMapExplorer() {
     a.download = "hymn-mindmap-visible.json";
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function saveCustomProfile() {
+    const label = customProfileName.trim();
+    const generatedId = slugifyProfileId(label);
+    if (!label || !generatedId) {
+      setProfileStatus("Enter a valid profile name.");
+      return;
+    }
+    try {
+      const payload = {
+        profile_id: generatedId,
+        label,
+        mode: "custom",
+        tags: csvToList(customProfileTags),
+        node_ids: csvToList(customProfileNodeIds),
+        event_ids: [],
+        include_full_context: false,
+        conversation_key: "mindmap-explorer-ui",
+      };
+      const response = await fetch(`${API_BASE}/api/mcp/set-context-profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        setProfileStatus("Could not save profile.");
+        return;
+      }
+      await refreshProfiles();
+      setActiveProfileId(generatedId);
+      setCustomProfileName("");
+      setCustomProfileTags("");
+      setCustomProfileNodeIds("");
+      setProfileStatus(`Saved profile: ${generatedId}`);
+    } catch {
+      setProfileStatus("Could not save profile.");
+    }
+  }
+
+  async function searchProfileDatapoints() {
+    const q = profileSearchKeyword.trim();
+    if (!q) {
+      setProfileSearchResults([]);
+      return;
+    }
+    try {
+      setProfileSearchLoading(true);
+      const response = await fetch(
+        `${API_BASE}/api/graph/search-datapoints?query=${encodeURIComponent(q)}&limit=20&type=${encodeURIComponent(
+          profileSearchType,
+        )}`,
+      );
+      if (!response.ok) {
+        setProfileSearchResults([]);
+        return;
+      }
+      const body = await response.json();
+      setProfileSearchResults(body.matches || []);
+    } catch {
+      setProfileSearchResults([]);
+    } finally {
+      setProfileSearchLoading(false);
+    }
+  }
+
+  function addNodeIdToEditor(nodeId) {
+    setEditorNodeIds((prev) => uniqueStrings([...prev, nodeId]));
+  }
+
+  function removeNodeIdFromEditor(nodeId) {
+    setEditorNodeIds((prev) => prev.filter((x) => x !== nodeId));
+  }
+
+  function addEventIdToEditor(eventId) {
+    setEditorEventIds((prev) => uniqueStrings([...prev, eventId]));
+  }
+
+  function removeEventIdFromEditor(eventId) {
+    setEditorEventIds((prev) => prev.filter((x) => x !== eventId));
+  }
+
+  async function saveActiveProfileEdits() {
+    if (!activeProfileId) return;
+    const selectedProfile = (profiles || []).find((p) => p.profile_id === activeProfileId);
+    if (!selectedProfile) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/mcp/set-context-profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          profile_id: activeProfileId,
+          label: editorLabel.trim() || activeProfileId,
+          mode: selectedProfile.mode || "custom",
+          tags: uniqueStrings(csvToList(editorTags)),
+          node_ids: uniqueStrings(editorNodeIds),
+          event_ids: uniqueStrings(editorEventIds),
+          include_full_context: Boolean(selectedProfile.include_full_context),
+          conversation_key: "mindmap-explorer-ui",
+        }),
+      });
+      if (!response.ok) {
+        setProfileStatus("Could not save profile edits.");
+        return;
+      }
+      await refreshProfiles();
+      setProfileStatus(`Saved edits to ${activeProfileId}`);
+    } catch {
+      setProfileStatus("Could not save profile edits.");
+    }
   }
 
   // Pan/zoom handlers
@@ -1313,6 +1546,175 @@ export default function MindMapExplorer() {
           <div>
             <div className="text-lg font-semibold">Mind Map Explorer</div>
             <div className="mt-1 text-xs text-neutral-600">{help}</div>
+            <div className="mt-2 inline-flex items-center gap-2 rounded-md border px-2 py-1 text-[11px]">
+              <span className="font-semibold">Profile</span>
+              <select
+                value={activeProfileId}
+                onChange={(e) => setActiveProfileId(e.target.value)}
+                className="rounded border px-1 py-[2px] text-[11px]"
+              >
+                {(profiles || []).map((p) => (
+                  <option key={p.profile_id} value={p.profile_id}>
+                    {p.label || p.profile_id}
+                  </option>
+                ))}
+                {!profiles.length ? <option value="full_context">full_context</option> : null}
+              </select>
+            </div>
+            <div className="mt-2 rounded-md border p-2 text-[11px]">
+              <div className="font-semibold">Create custom profile</div>
+              <input
+                value={customProfileName}
+                onChange={(e) => setCustomProfileName(e.target.value)}
+                placeholder="Name (e.g. Business Ops)"
+                className="mt-1 w-full rounded border px-2 py-1"
+              />
+              <input
+                value={customProfileTags}
+                onChange={(e) => setCustomProfileTags(e.target.value)}
+                placeholder="Tags CSV (e.g. startup, funding)"
+                className="mt-1 w-full rounded border px-2 py-1"
+              />
+              <input
+                value={customProfileNodeIds}
+                onChange={(e) => setCustomProfileNodeIds(e.target.value)}
+                placeholder="Node IDs CSV (optional)"
+                className="mt-1 w-full rounded border px-2 py-1"
+              />
+              <div className="mt-1 flex items-center gap-2">
+                <button
+                  onClick={saveCustomProfile}
+                  className="rounded border px-2 py-1 hover:bg-neutral-100"
+                >
+                  Save profile
+                </button>
+                <button
+                  onClick={refreshProfiles}
+                  className="rounded border px-2 py-1 hover:bg-neutral-100"
+                >
+                  Refresh
+                </button>
+              </div>
+              {profileStatus ? <div className="mt-1 text-neutral-600">{profileStatus}</div> : null}
+            </div>
+            <div className="mt-2 rounded-md border p-2 text-[11px]">
+              <div className="font-semibold">Edit active profile</div>
+              <input
+                value={editorLabel}
+                onChange={(e) => setEditorLabel(e.target.value)}
+                placeholder="Profile label"
+                className="mt-1 w-full rounded border px-2 py-1"
+              />
+              <input
+                value={editorTags}
+                onChange={(e) => setEditorTags(e.target.value)}
+                placeholder="Tags CSV"
+                className="mt-1 w-full rounded border px-2 py-1"
+              />
+              <input
+                value={profileSearchKeyword}
+                onChange={(e) => setProfileSearchKeyword(e.target.value)}
+                placeholder="Search DB keywords for datapoints"
+                className="mt-1 w-full rounded border px-2 py-1"
+              />
+              <select
+                value={profileSearchType}
+                onChange={(e) => setProfileSearchType(e.target.value)}
+                className="mt-1 w-full rounded border px-2 py-1"
+              >
+                <option value="all">All (nodes + evidence)</option>
+                <option value="nodes">Nodes only</option>
+                <option value="evidence">Evidence only</option>
+              </select>
+              <div className="mt-1 flex items-center gap-2">
+                <button
+                  onClick={searchProfileDatapoints}
+                  className="rounded border px-2 py-1 hover:bg-neutral-100"
+                >
+                  {profileSearchLoading ? "Searching..." : "Search datapoints"}
+                </button>
+                <button
+                  onClick={saveActiveProfileEdits}
+                  className="rounded border px-2 py-1 hover:bg-neutral-100"
+                >
+                  Save active profile
+                </button>
+              </div>
+              <div className="mt-2 max-h-28 overflow-auto rounded border p-1">
+                {(profileSearchResults || []).length ? (
+                  profileSearchResults.map((row) => {
+                    const isNode = row.kind === "node";
+                    const id = isNode ? row.node_id : row.event_id;
+                    const added = isNode ? editorNodeIds.includes(id) : editorEventIds.includes(id);
+                    return (
+                      <div key={`${row.kind}-${id}`} className="mb-1 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate font-medium">
+                            {row.label || id}{" "}
+                            <span className="rounded border px-1 py-[1px] text-[9px] uppercase">
+                              {row.kind}
+                            </span>
+                          </div>
+                          <div className="truncate text-[10px] text-neutral-600">{id}</div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (isNode) {
+                              if (added) removeNodeIdFromEditor(id);
+                              else addNodeIdToEditor(id);
+                            } else if (added) removeEventIdFromEditor(id);
+                            else addEventIdToEditor(id);
+                          }}
+                          className="rounded border px-2 py-1"
+                        >
+                          {added ? "Remove" : "Add"}
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="text-neutral-500">No search results yet.</div>
+                )}
+              </div>
+              <div className="mt-2 rounded border p-1">
+                <div className="mb-1 font-medium">Node IDs in active profile</div>
+                <div className="flex flex-wrap gap-1">
+                  {(editorNodeIds || []).length ? (
+                    editorNodeIds.map((nodeId) => (
+                      <button
+                        key={nodeId}
+                        onClick={() => removeNodeIdFromEditor(nodeId)}
+                        className="rounded border px-1 py-[2px] text-[10px] hover:bg-neutral-100"
+                        title="Remove from active profile"
+                      >
+                        {nodeId} x
+                      </button>
+                    ))
+                  ) : (
+                    <div className="text-neutral-500">None selected.</div>
+                  )}
+                </div>
+              </div>
+              <div className="mt-2 rounded border p-1">
+                <div className="mb-1 font-medium">Event IDs in active profile</div>
+                <div className="flex flex-wrap gap-1">
+                  {(editorEventIds || []).length ? (
+                    editorEventIds.map((eventId) => (
+                      <button
+                        key={eventId}
+                        onClick={() => removeEventIdFromEditor(eventId)}
+                        className="rounded border px-1 py-[2px] text-[10px] hover:bg-neutral-100"
+                        title="Remove from active profile"
+                      >
+                        {eventId} x
+                      </button>
+                    ))
+                  ) : (
+                    <div className="text-neutral-500">None selected.</div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
           <button
             onClick={exportJSON}
@@ -1697,6 +2099,38 @@ export default function MindMapExplorer() {
                     .map((a) => `${a.reason} -> ${a.nodeId}`)
                     .join(" • ") || "(none yet)"}
                 </div>
+              </div>
+              <div className="rounded-md border p-2">
+                <div className="text-[11px] font-semibold">Profile-scoped recall</div>
+                <div className="mt-1 text-xs text-neutral-700">
+                  Active profile: <span className="font-semibold">{activeProfileId}</span>
+                </div>
+                <div className="mt-1 text-xs text-neutral-700">
+                  {recallLoading
+                    ? "Loading recall..."
+                    : recallData
+                      ? `${(recallData.matches || []).length} matches • ${(
+                          recallData.contradictions || []
+                        ).length} contradictions`
+                      : "Type in Search to run recall_context"}
+                </div>
+                {recallData ? (
+                  <div className="mt-2 space-y-1">
+                    {(recallData.matches || []).slice(0, 3).map((m) => (
+                      <div key={m.node_id} className="rounded border px-2 py-1">
+                        <div className="text-[11px] font-medium">
+                          {m.label}{" "}
+                          <span className="rounded bg-neutral-100 px-1 py-[1px] text-[10px]">
+                            {((m.relevance_score || 0) * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[10px] text-neutral-600">
+                          {(m.relationship_types || []).slice(0, 3).join(" · ") || "no relationships"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
           )}

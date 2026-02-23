@@ -52,6 +52,10 @@ export async function ingestInsight(store, payload) {
     hash_signature: hashSignature,
     tags,
     related_node_ids: relatedNodeIds,
+    assigned_profiles: payload.assigned_profiles || [],
+    profile_scores: payload.profile_scores || {},
+    classification_confidence: payload.classification_confidence || 0,
+    needs_review: Boolean(payload.needs_review),
   };
 
   const evidenceResult = await store.insertEvidence(event);
