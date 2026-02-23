@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MindMap2DView from "./components/MindMap2DView";
-import { buildForceGraphData } from "./utils/graph3d";
+import { buildForceGraphData, buildSelectedDatapoints } from "./utils/graph3d";
 
 /**
  * Hymn — 12-Month Mind Map Explorer (Interactive)
@@ -1000,6 +1000,8 @@ export default function MindMapExplorer() {
   const [scale, setScale] = useState(1);
   const [viewMode, setViewMode] = useState("2d");
   const [focusNodeId, setFocusNodeId] = useState(null);
+  const [datapointsExpanded, setDatapointsExpanded] = useState(false);
+  const [activeDatapointId, setActiveDatapointId] = useState(null);
 
   const [selectedId, setSelectedId] = useState("root");
   const [query, setQuery] = useState("");
@@ -1045,6 +1047,11 @@ export default function MindMapExplorer() {
       setFocusNodeId(null);
     }
   }, [viewMode, selectedId]);
+
+  useEffect(() => {
+    setDatapointsExpanded(false);
+    setActiveDatapointId(null);
+  }, [selectedId]);
 
   const layout = useMemo(() => {
     return computeTreeLayout(root, collapsed);
@@ -1644,6 +1651,49 @@ export default function MindMapExplorer() {
     return connectionData.filter((m) => visibleSet.has(m.from_id) && visibleSet.has(m.to_id));
   }, [connectionData, visibleSet]);
 
+  const nodeLabelById = useMemo(() => {
+    const map = new Map();
+    flat.forEach((n) => {
+      map.set(n.id, n.label || n.id);
+    });
+    return map;
+  }, [flat]);
+
+  const datapointEntries = useMemo(() => {
+    return buildSelectedDatapoints({
+      selectedNode: selected,
+      connectionData: visibleConnectionData,
+      nodeLabelById,
+      maxItems: 12,
+    });
+  }, [selected, visibleConnectionData, nodeLabelById]);
+
+  const selectedHudData = useMemo(() => {
+    const details = String(selected?.details || "");
+    const detailSnippet = details.length > 220 ? `${details.slice(0, 220)}...` : details;
+    const relationHighlights = visibleConnectionData.slice(0, 5).map((row) => {
+      const fromLabel = nodeLabelById.get(row.from_id) || row.from_id;
+      const toLabel = nodeLabelById.get(row.to_id) || row.to_id;
+      return {
+        id: `${row.from_id}:${row.type}:${row.to_id}`,
+        label: `${row.type}: ${fromLabel} -> ${toLabel}`,
+      };
+    });
+    const activeDatapoint =
+      datapointEntries.find((x) => x.id === activeDatapointId) || datapointEntries[0] || null;
+
+    return {
+      nodeId: selected?.id,
+      title: selected?.label || "Selected node",
+      details: detailSnippet,
+      tags: selected?.tags || [],
+      depth: selectedPath.length ? selectedPath.length - 1 : 0,
+      relationships: relationHighlights,
+      datapoints: datapointEntries,
+      activeDatapoint,
+    };
+  }, [selected, selectedPath.length, visibleConnectionData, nodeLabelById, datapointEntries, activeDatapointId]);
+
   const visibleNodes = useMemo(() => {
     return layout.visibleIds
       .map((id) => {
@@ -1662,8 +1712,19 @@ export default function MindMapExplorer() {
       treeEdges: layout.edges,
       connectionData: visibleConnectionData,
       overlayEnabled,
+      selectedNodeId: selectedId,
+      datapointsExpanded,
+      datapointEntries,
     });
-  }, [visibleNodes, layout.edges, visibleConnectionData, overlayEnabled]);
+  }, [
+    visibleNodes,
+    layout.edges,
+    visibleConnectionData,
+    overlayEnabled,
+    selectedId,
+    datapointsExpanded,
+    datapointEntries,
+  ]);
 
   const help =
     viewMode === "2d"
@@ -2144,6 +2205,16 @@ export default function MindMapExplorer() {
               onSelectNode={setSelectedId}
               onToggleCollapse={toggleCollapse}
               focusNodeId={focusNodeId}
+              selectedHudData={selectedHudData}
+              datapointsExpanded={datapointsExpanded}
+              onExpandDatapoints={() => setDatapointsExpanded(true)}
+              onHideDatapoints={() => {
+                setDatapointsExpanded(false);
+                setActiveDatapointId(null);
+              }}
+              onFocusSelected={() => setFocusNodeId(selectedId)}
+              onSelectDatapoint={setActiveDatapointId}
+              activeDatapointId={activeDatapointId}
             />
           </Suspense>
         )}

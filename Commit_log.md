@@ -21,3 +21,10 @@
 - Extended evidence schema/storage/recall to carry import metadata and capability-confidence annotations, plus source filtering support across recall and datapoint search.
 - Updated `MindMapExplorer` with evidence source filters and an in-app auto-import panel (manual Cursor note import + recent git import + import status refresh).
 - Added regression coverage for import schemas, importer service behavior, API integration, and frontend import controls/endpoints.
+
+## 2026-02-22 (3D HUD + datapoint orbit interactions)
+
+- Added 3D node HUD support in `MindMapExplorer`/`MindMap3DView`, including selected-node summaries (details/tags/relationship highlights) and in-canvas controls for focus and datapoint expansion.
+- Implemented ephemeral mini datapoint nodes in the 3D graph adapter, sourced from node metadata (tags/detail snippets) and relationship overlay records, with bounded count and distinct styling.
+- Added interaction safeguards so datapoint mini-node clicks update HUD focus without replacing the right-panel parent selection.
+- Expanded frontend regression tests to cover HUD visibility, datapoint expand/hide behavior, and parent-selection continuity in 3D mode.
