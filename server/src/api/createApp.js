@@ -1,0 +1,79 @@
+import express from "express";
+import cors from "cors";
+
+export function createApp(service) {
+  const app = express();
+  app.use(cors());
+  app.use(express.json({ limit: "1mb" }));
+
+  app.get("/health", (_req, res) => {
+    res.json({ ok: true, service: "mindmap-api" });
+  });
+
+  app.post("/api/mcp/session/bootstrap", async (req, res) => {
+    try {
+      const result = await service.sessionBootstrap(req.body);
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/mcp/log-insight", async (req, res) => {
+    try {
+      const result = await service.logInsight(req.body);
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/mcp/link-nodes", async (req, res) => {
+    try {
+      const result = await service.linkNodes(req.body);
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/graph/connections", async (req, res) => {
+    const nodeId = String(req.query.nodeId || "");
+    const limit = Number(req.query.limit || 8);
+    const types = String(req.query.types || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (!nodeId) {
+      res.status(400).json({ error: "nodeId is required" });
+      return;
+    }
+    try {
+      const result = await service.findConnections({ nodeId, limit, types });
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/graph/insights", async (_req, res) => {
+    try {
+      const result = await service.getInsights();
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/mcp/recommend-next-actions", async (req, res) => {
+    const limit = Number(req.query.limit || 8);
+    try {
+      const actions = await service.recommendNextActions(limit);
+      res.json({ actions });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  return app;
+}
