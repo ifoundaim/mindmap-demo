@@ -69,4 +69,52 @@ describe("mindmap api integration", () => {
     expect(Array.isArray(recall.body.matches)).toBe(true);
     expect(recall.body.meta.profile_applied).toBe("business_custom");
   });
+
+  it("supports import endpoints and source-aware retrieval", async () => {
+    const app = buildApp();
+    const cursorImport = await request(app).post("/api/import/cursor-chats").send({
+      conversation_key: "import-cursor-api",
+      workspace: "/Users/me/mindmap-demo",
+      chats: [
+        {
+          chat_id: "cursor-1",
+          turn_index: 1,
+          title: "Import wiring",
+          message: "Auto import cursor context and show source in UI",
+          tags: ["import", "ui"],
+          related_node_ids: ["engineering"],
+        },
+      ],
+    });
+    expect(cursorImport.status).toBe(200);
+    expect(cursorImport.body.imported).toBe(1);
+
+    const gitImport = await request(app).post("/api/import/git-history").send({
+      conversation_key: "import-git-api",
+      repository: "mindmap-demo",
+      commits: [
+        {
+          hash: "def456",
+          author: "Dev User",
+          date: new Date().toISOString(),
+          subject: "feat: add source filter support",
+          files: ["src/MindMapExplorer.jsx"],
+        },
+      ],
+    });
+    expect(gitImport.status).toBe(200);
+    expect(gitImport.body.imported).toBe(1);
+
+    const sourceFilteredSearch = await request(app)
+      .get("/api/graph/search-datapoints")
+      .query({ query: "source filter", limit: 5, type: "evidence", sources: "git_commit" });
+    expect(sourceFilteredSearch.status).toBe(200);
+    expect(Array.isArray(sourceFilteredSearch.body.matches)).toBe(true);
+    expect(sourceFilteredSearch.body.matches.length).toBeGreaterThan(0);
+
+    const status = await request(app).get("/api/import/status");
+    expect(status.status).toBe(200);
+    expect(status.body.evidence).toBeGreaterThan(0);
+    expect(status.body.source_counts.git_commit).toBeGreaterThan(0);
+  });
 });

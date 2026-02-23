@@ -56,6 +56,8 @@ export async function ingestInsight(store, payload) {
     profile_scores: payload.profile_scores || {},
     classification_confidence: payload.classification_confidence || 0,
     needs_review: Boolean(payload.needs_review),
+    import_metadata: payload.import_metadata,
+    capability: payload.capability,
   };
 
   const evidenceResult = await store.insertEvidence(event);

@@ -162,4 +162,62 @@ describe("mindmap service dedupe + merge behavior", () => {
     expect(recalled.meta.profile_applied).toBe("events_only_music");
     expect(recalled.matches.length).toBeGreaterThan(0);
   });
+
+  it("imports cursor chats and exposes source-filtered recall evidence", async () => {
+    const service = createService();
+    const imported = await service.importCursorChats({
+      conversation_key: "cursor-import-c1",
+      workspace: "/Users/me/mindmap-demo",
+      chats: [
+        {
+          chat_id: "c-1",
+          turn_index: 0,
+          title: "Importer planning",
+          message: "Add source filters in MindMapExplorer for imported evidence",
+          tags: ["ui", "import"],
+          related_node_ids: ["engineering"],
+        },
+      ],
+    });
+
+    expect(imported.imported).toBe(1);
+    const recalled = await service.recallContext({
+      query: "source filters imported evidence",
+      conversation_key: "cursor-import-c1",
+      top_k: 5,
+      include_contradictions: false,
+      include_actions: false,
+      sources: ["cursor_chat"],
+    });
+    expect(recalled.matches.length).toBeGreaterThan(0);
+    const evidence = recalled.matches.flatMap((m) => m.evidence || []);
+    expect(evidence.some((e) => e.source === "cursor_chat")).toBe(true);
+  });
+
+  it("imports git commits and supports source-filtered datapoint search", async () => {
+    const service = createService();
+    const imported = await service.importGitHistory({
+      conversation_key: "git-import-c1",
+      repository: "mindmap-demo",
+      commits: [
+        {
+          hash: "abc123",
+          author: "Dev User",
+          date: new Date().toISOString(),
+          subject: "feat: add import endpoints for git history",
+          body: "Includes API routes and service methods.",
+          files: ["server/src/api/createApp.js", "server/src/services/mindmapService.js"],
+        },
+      ],
+    });
+    expect(imported.imported).toBe(1);
+
+    const searched = await service.searchDatapoints({
+      query: "import endpoints",
+      type: "evidence",
+      sources: ["git_commit"],
+    });
+    expect(searched.matches.length).toBeGreaterThan(0);
+    expect(searched.matches.every((m) => m.kind === "evidence")).toBe(true);
+  });
 });

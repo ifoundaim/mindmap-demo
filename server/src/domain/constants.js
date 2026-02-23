@@ -10,7 +10,14 @@ export const EDGE_TYPES = [
   "enables",
 ];
 
-export const SOURCE_TYPES = ["mcp_initial", "mcp_explicit", "import"];
+export const SOURCE_TYPES = [
+  "mcp_initial",
+  "mcp_explicit",
+  "import",
+  "cursor_chat",
+  "git_commit",
+  "git_diff",
+];
 
 export const DEFAULT_EDGE_TYPE = "same_theme_as";
 

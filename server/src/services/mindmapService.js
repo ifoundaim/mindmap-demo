@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { ingestInsight } from "../ingestion/ingest.js";
 import {
   LogInsightSchema,
@@ -7,6 +9,8 @@ import {
   RecallContextSchema,
   SetContextProfileSchema,
   GetContextProfileSchema,
+  ImportCursorChatsSchema,
+  ImportGitHistorySchema,
 } from "../helix/schema.js";
 import {
   scoreConnections,
@@ -18,9 +22,27 @@ import { metrics } from "../observability/metrics.js";
 import { jaccardSimilarity } from "../lib/text.js";
 import { classifyContextProfiles } from "../ingestion/classifyProfiles.js";
 import { DEFAULT_CONTEXT_PROFILES } from "../domain/constants.js";
+import { normalizeCursorChatEvents, normalizeGitCommitEvents } from "../ingestion/importers.js";
 
 async function maybeAwait(value) {
   return Promise.resolve(value);
+}
+
+const execFileAsync = promisify(execFile);
+
+function parseGitLogOutput(stdout) {
+  return String(stdout || "")
+    .split("\x1e")
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      const [header, ...fileLines] = chunk.split("\n");
+      const [hash = "", author = "", date = "", subject = ""] = header.split("\t");
+      const body = "";
+      const files = fileLines.map((x) => x.trim()).filter(Boolean);
+      return { hash, author, date, subject, body, files };
+    })
+    .filter((x) => x.hash && x.subject);
 }
 
 function isExplicitFullContext(text) {
@@ -311,6 +333,7 @@ export class MindMapService {
 
     const constrainedNodeIds = new Set(parsed.node_ids || []);
     const tagConstraints = new Set((parsed.tags || []).map((t) => t.toLowerCase()));
+    const sourceConstraints = new Set(parsed.sources || []);
 
     const candidates = nodes
       .filter((n) => {
@@ -356,6 +379,7 @@ export class MindMapService {
           .sort((a, b) => b.sim - a.sim);
 
         const evidenceList = [...relatedEvidence, ...semanticEvidence]
+          .filter((e) => !sourceConstraints.size || sourceConstraints.has(e.source))
           .filter((e, idx, arr) => arr.findIndex((x) => x.event_id === e.event_id) === idx)
           .slice(0, 3);
 
@@ -363,6 +387,7 @@ export class MindMapService {
           ? Math.max(...evidenceList.map((e) => e.sim || jaccardSimilarity(query, e.summary))) * 0.35
           : 0;
         const relevance = Math.min(1, nodeScore + evidenceBoost);
+        if (sourceConstraints.size && evidenceList.length === 0) return null;
 
         const relationshipTypes = Array.from(
           new Set(
@@ -383,9 +408,12 @@ export class MindMapService {
             timestamp: e.timestamp,
             source: e.source,
             excerpt: e.raw_excerpt || e.summary,
+            import_metadata: e.import_metadata,
+            capability: e.capability,
           })),
         };
       })
+      .filter(Boolean)
       .filter((x) => x.relevance_score > 0)
       .sort((a, b) => b.relevance_score - a.relevance_score);
 
@@ -421,6 +449,132 @@ export class MindMapService {
         total_candidates: candidates.length,
         dedupe_applied: true,
       },
+    };
+  }
+
+  async importCursorChats(payload) {
+    metrics.increment("tool_calls");
+    const parsed = ImportCursorChatsSchema.parse(payload);
+    const knownNodeIds = (await maybeAwait(this.store.listNodes())).map((n) => n.id);
+    const events = normalizeCursorChatEvents(parsed, knownNodeIds);
+    const profiles = await maybeAwait(this.store.listProfiles());
+
+    const results = [];
+    for (const event of events) {
+      const profileAssignment = await classifyContextProfiles({
+        summary: event.summary,
+        tags: event.tags || [],
+        relatedNodeIds: event.related_node_ids || [],
+        profiles,
+      });
+      const result = await ingestInsight(this.store, {
+        conversation_key: event.conversation_key,
+        turn_key: event.turn_key,
+        summary: event.summary,
+        raw_excerpt: event.raw_excerpt,
+        source: event.source,
+        tags: event.tags,
+        related_node_ids: event.related_node_ids,
+        assigned_profiles: profileAssignment.assignedProfiles,
+        profile_scores: profileAssignment.profileScores,
+        classification_confidence: profileAssignment.classificationConfidence,
+        needs_review: event.needs_review || profileAssignment.needsReview,
+        timestamp: event.timestamp,
+        import_metadata: event.import_metadata,
+        capability: event.capability,
+      });
+      if (result.inserted) metrics.increment("events_inserted");
+      else metrics.increment("events_deduped");
+      results.push({
+        turn_key: event.turn_key,
+        inserted: result.inserted,
+        reason: result.reason || null,
+        event_id: result.eventId || result.existingEventId || null,
+      });
+    }
+
+    return {
+      conversation_key: parsed.conversation_key,
+      imported: results.filter((x) => x.inserted).length,
+      skipped_duplicates: results.filter((x) => !x.inserted).length,
+      total: results.length,
+      results,
+    };
+  }
+
+  async importGitHistory(payload) {
+    metrics.increment("tool_calls");
+    const parsed = ImportGitHistorySchema.parse(payload);
+    let commits = parsed.commits || [];
+
+    if (!commits.length && parsed.repo_path) {
+      const pretty = "%x1e%H%x09%an%x09%aI%x09%s";
+      const logArgs = [
+        "-C",
+        parsed.repo_path,
+        "log",
+        `--max-count=${parsed.limit}`,
+        `--pretty=format:${pretty}`,
+        "--name-only",
+      ];
+      if (parsed.branch) {
+        logArgs.push(parsed.branch);
+      }
+      try {
+        const { stdout } = await execFileAsync("git", logArgs);
+        commits = parseGitLogOutput(stdout);
+      } catch {
+        commits = [];
+      }
+    } else if (commits.length) {
+      commits = commits.slice(0, parsed.limit);
+    }
+
+    const knownNodeIds = (await maybeAwait(this.store.listNodes())).map((n) => n.id);
+    const events = normalizeGitCommitEvents(parsed, commits, knownNodeIds);
+    const profiles = await maybeAwait(this.store.listProfiles());
+    const results = [];
+
+    for (const event of events) {
+      const profileAssignment = await classifyContextProfiles({
+        summary: event.summary,
+        tags: event.tags || [],
+        relatedNodeIds: event.related_node_ids || [],
+        profiles,
+      });
+      const result = await ingestInsight(this.store, {
+        event_id: event.event_id,
+        conversation_key: event.conversation_key,
+        turn_key: event.turn_key,
+        summary: event.summary,
+        raw_excerpt: event.raw_excerpt,
+        source: event.source,
+        tags: event.tags,
+        related_node_ids: event.related_node_ids,
+        assigned_profiles: profileAssignment.assignedProfiles,
+        profile_scores: profileAssignment.profileScores,
+        classification_confidence: profileAssignment.classificationConfidence,
+        needs_review: event.needs_review || profileAssignment.needsReview,
+        timestamp: event.timestamp,
+        import_metadata: event.import_metadata,
+        capability: event.capability,
+      });
+      if (result.inserted) metrics.increment("events_inserted");
+      else metrics.increment("events_deduped");
+      results.push({
+        turn_key: event.turn_key,
+        inserted: result.inserted,
+        reason: result.reason || null,
+        event_id: result.eventId || result.existingEventId || null,
+      });
+    }
+
+    return {
+      conversation_key: parsed.conversation_key,
+      imported: results.filter((x) => x.inserted).length,
+      skipped_duplicates: results.filter((x) => !x.inserted).length,
+      total: results.length,
+      results,
     };
   }
 
@@ -467,7 +621,7 @@ export class MindMapService {
     return { profiles: profiles?.length ? profiles : DEFAULT_CONTEXT_PROFILES };
   }
 
-  async searchDatapoints({ query, limit = 20, type = "all" } = {}) {
+  async searchDatapoints({ query, limit = 20, type = "all", sources = [] } = {}) {
     const q = String(query || "").trim().toLowerCase();
     const normalizedType = ["all", "nodes", "evidence"].includes(String(type || "").toLowerCase())
       ? String(type || "").toLowerCase()
@@ -478,6 +632,7 @@ export class MindMapService {
     const nodes = normalizedType !== "evidence" ? await maybeAwait(this.store.listNodes()) : [];
     const evidence =
       normalizedType !== "nodes" ? Array.from(this.store.evidence?.values?.() || []) : [];
+    const sourceSet = new Set((sources || []).filter(Boolean));
 
     const nodeMatches = nodes.map((node) => {
         const label = String(node.label || "");
@@ -505,6 +660,7 @@ export class MindMapService {
 
     const evidenceMatches = evidence
       .map((event) => {
+        if (sourceSet.size && !sourceSet.has(event.source)) return null;
         const summary = String(event.summary || "");
         const excerpt = String(event.raw_excerpt || "");
         const tags = event.tags || [];

@@ -76,6 +76,43 @@ export function createApp(service) {
     }
   });
 
+  app.post("/api/import/cursor-chats", async (req, res) => {
+    try {
+      const result = await service.importCursorChats(req.body || {});
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/import/git-history", async (req, res) => {
+    try {
+      const result = await service.importGitHistory(req.body || {});
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/import/status", async (_req, res) => {
+    try {
+      const nodes = await service.store.listNodes();
+      const evidence = Array.from(service.store.evidence?.values?.() || []);
+      const bySource = evidence.reduce((acc, item) => {
+        const source = item.source || "unknown";
+        acc[source] = (acc[source] || 0) + 1;
+        return acc;
+      }, {});
+      res.json({
+        nodes: nodes.length,
+        evidence: evidence.length,
+        source_counts: bySource,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.get("/api/graph/connections", async (req, res) => {
     const nodeId = String(req.query.nodeId || "");
     const limit = Number(req.query.limit || 8);
@@ -108,8 +145,12 @@ export function createApp(service) {
     const query = String(req.query.query || req.query.q || "");
     const limit = Number(req.query.limit || 20);
     const type = String(req.query.type || "all");
+    const sources = String(req.query.sources || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
     try {
-      const result = await service.searchDatapoints({ query, limit, type });
+      const result = await service.searchDatapoints({ query, limit, type, sources });
       res.json(result);
     } catch (error) {
       res.status(500).json({ error: error.message });

@@ -7,6 +7,8 @@ import {
   RecallContextOutputSchema,
   SetContextProfileSchema,
   GetContextProfileSchema,
+  ImportCursorChatsSchema,
+  ImportGitHistorySchema,
 } from "../src/helix/schema.js";
 
 describe("MCP contract schemas", () => {
@@ -49,6 +51,7 @@ describe("MCP contract schemas", () => {
       include_contradictions: true,
       include_actions: false,
       tags: ["startup"],
+      sources: ["git_commit", "cursor_chat"],
     });
     expect(parsed.top_k).toBe(5);
   });
@@ -67,8 +70,17 @@ describe("MCP contract schemas", () => {
             {
               event_id: "ev-1",
               timestamp: new Date().toISOString(),
-              source: "mcp_explicit",
+              source: "git_commit",
               excerpt: "Evidence excerpt",
+              import_metadata: {
+                repository: "mindmap-demo",
+                commit_hash: "abc123",
+              },
+              capability: {
+                labels: ["feature"],
+                confidence: 0.8,
+                reason: "Test reason",
+              },
             },
           ],
         },
@@ -108,5 +120,38 @@ describe("MCP contract schemas", () => {
       conversation_key: "conv-1",
     });
     expect(getParsed.conversation_key).toBe("conv-1");
+  });
+
+  it("validates cursor chat import schema", () => {
+    const parsed = ImportCursorChatsSchema.parse({
+      conversation_key: "cursor-conv",
+      workspace: "/Users/me/proj",
+      chats: [
+        {
+          chat_id: "chat-1",
+          title: "API planning",
+          message: "Implement import endpoint for git history",
+          tags: ["api", "import"],
+          related_node_ids: ["engineering"],
+        },
+      ],
+    });
+    expect(parsed.chats).toHaveLength(1);
+  });
+
+  it("validates git history import schema", () => {
+    const parsed = ImportGitHistorySchema.parse({
+      conversation_key: "git-conv",
+      repository: "mindmap-demo",
+      branch: "main",
+      commits: [
+        {
+          hash: "abc123",
+          subject: "feat: add import endpoints",
+          files: ["server/src/api/createApp.js"],
+        },
+      ],
+    });
+    expect(parsed.commits[0].hash).toBe("abc123");
   });
 });

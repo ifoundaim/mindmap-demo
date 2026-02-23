@@ -39,6 +39,27 @@ export const EvidenceSchema = z.object({
   profile_scores: z.record(z.string(), z.number()).default({}),
   classification_confidence: z.number().min(0).max(1).default(0),
   needs_review: z.boolean().default(false),
+  import_metadata: z
+    .object({
+      kind: z.enum(["cursor_chat", "git_commit", "git_diff"]).optional(),
+      workspace: z.string().optional(),
+      repository: z.string().optional(),
+      repo_path: z.string().optional(),
+      branch: z.string().optional(),
+      commit_hash: z.string().optional(),
+      author: z.string().optional(),
+      files_touched: z.array(z.string()).default([]),
+      chat_title: z.string().optional(),
+      transcript_turn_index: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+  capability: z
+    .object({
+      labels: z.array(z.string()).default([]),
+      confidence: z.number().min(0).max(1).default(0),
+      reason: z.string().default(""),
+    })
+    .optional(),
 });
 
 export const SessionBootstrapSchema = z.object({
@@ -73,6 +94,7 @@ export const RecallContextSchema = z.object({
   include_actions: z.boolean().default(true),
   tags: z.array(z.string()).default([]),
   node_ids: z.array(z.string()).default([]),
+  sources: z.array(z.enum(SOURCE_TYPES)).default([]),
 });
 
 export const RecallContextEvidenceSchema = z.object({
@@ -80,6 +102,14 @@ export const RecallContextEvidenceSchema = z.object({
   timestamp: z.string(),
   source: z.enum(SOURCE_TYPES),
   excerpt: z.string(),
+  import_metadata: z.record(z.string(), z.unknown()).optional(),
+  capability: z
+    .object({
+      labels: z.array(z.string()).default([]),
+      confidence: z.number().min(0).max(1).default(0),
+      reason: z.string().default(""),
+    })
+    .optional(),
 });
 
 export const RecallContextMatchSchema = z.object({
@@ -144,4 +174,44 @@ export const SetContextProfileSchema = z.object({
 export const GetContextProfileSchema = z.object({
   profile_id: z.string().optional(),
   conversation_key: z.string().optional(),
+});
+
+export const ImportCursorChatsSchema = z.object({
+  conversation_key: z.string().min(1),
+  workspace: z.string().optional(),
+  chats: z
+    .array(
+      z.object({
+        chat_id: z.string().min(1).optional(),
+        title: z.string().optional(),
+        timestamp: z.string().optional(),
+        turn_key: z.string().optional(),
+        turn_index: z.number().int().nonnegative().optional(),
+        message: z.string().min(1),
+        raw_excerpt: z.string().optional(),
+        tags: z.array(z.string()).default([]),
+        related_node_ids: z.array(z.string()).default([]),
+      }),
+    )
+    .min(1),
+});
+
+export const ImportGitHistorySchema = z.object({
+  conversation_key: z.string().min(1).default("git-history"),
+  repository: z.string().optional(),
+  repo_path: z.string().optional(),
+  branch: z.string().optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+  commits: z
+    .array(
+      z.object({
+        hash: z.string().min(1),
+        author: z.string().optional(),
+        date: z.string().optional(),
+        subject: z.string().min(1),
+        body: z.string().optional(),
+        files: z.array(z.string()).default([]),
+      }),
+    )
+    .default([]),
 });

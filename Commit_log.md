@@ -14,3 +14,10 @@
 - Implemented hybrid profile-aware memory across schema/store/service/API/MCP/UI, including default + custom profiles, auto-assignment, profile-scoped recall, and policy guardrails.
 - Added profile observability counters and regression coverage for profile contracts, service behavior, and API flows.
 - Added in-app profile creation/editing tools with keyword search over graph datapoints, plus node- and event-level (`event_ids`) profile curation and save flows.
+
+## 2026-02-22 (Auto import + capability context + UI controls)
+
+- Added source-aware context import support for Cursor chat entries and git commit history, including new API routes (`/api/import/cursor-chats`, `/api/import/git-history`, `/api/import/status`) and importer normalization/enrichment flows.
+- Extended evidence schema/storage/recall to carry import metadata and capability-confidence annotations, plus source filtering support across recall and datapoint search.
+- Updated `MindMapExplorer` with evidence source filters and an in-app auto-import panel (manual Cursor note import + recent git import + import status refresh).
+- Added regression coverage for import schemas, importer service behavior, API integration, and frontend import controls/endpoints.

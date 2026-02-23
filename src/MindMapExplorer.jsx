@@ -1,4 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import MindMap2DView from "./components/MindMap2DView";
+import { buildForceGraphData } from "./utils/graph3d";
 
 /**
  * Hymn — 12-Month Mind Map Explorer (Interactive)
@@ -798,6 +800,9 @@ const EDGE_TYPES = [
   "blocks",
   "enables",
 ];
+const EVIDENCE_SOURCES = ["mcp_initial", "mcp_explicit", "import", "cursor_chat", "git_commit", "git_diff"];
+
+const MindMap3DView = lazy(() => import("./components/MindMap3DView"));
 
 // ---------------------------
 // 2) Helpers
@@ -993,12 +998,15 @@ export default function MindMapExplorer() {
   const [tx, setTx] = useState(120);
   const [ty, setTy] = useState(0);
   const [scale, setScale] = useState(1);
+  const [viewMode, setViewMode] = useState("2d");
+  const [focusNodeId, setFocusNodeId] = useState(null);
 
   const [selectedId, setSelectedId] = useState("root");
   const [query, setQuery] = useState("");
   const [tagFilter, setTagFilter] = useState(null);
   const [overlayEnabled, setOverlayEnabled] = useState(true);
   const [edgeTypeFilter, setEdgeTypeFilter] = useState(() => new Set(EDGE_TYPES));
+  const [sourceFilter, setSourceFilter] = useState(() => new Set(EVIDENCE_SOURCES));
   const [connectionData, setConnectionData] = useState([]);
   const [insights, setInsights] = useState({ top_bridges: [], contradictions: [], timeline: [] });
   const [actions, setActions] = useState([]);
@@ -1019,9 +1027,24 @@ export default function MindMapExplorer() {
   const [profileSearchType, setProfileSearchType] = useState("all");
   const [profileSearchResults, setProfileSearchResults] = useState([]);
   const [profileSearchLoading, setProfileSearchLoading] = useState(false);
+  const [cursorImportText, setCursorImportText] = useState("");
+  const [gitRepoPath, setGitRepoPath] = useState(".");
+  const [gitBranch, setGitBranch] = useState("");
+  const [gitCommitLimit, setGitCommitLimit] = useState(15);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importStatusMessage, setImportStatusMessage] = useState("");
+  const [importStats, setImportStats] = useState(null);
 
   const svgRef = useRef(null);
   const dragging = useRef({ on: false, x: 0, y: 0, tx0: 0, ty0: 0 });
+
+  useEffect(() => {
+    if (viewMode === "3d") {
+      setFocusNodeId(selectedId || "root");
+    } else {
+      setFocusNodeId(null);
+    }
+  }, [viewMode, selectedId]);
 
   const layout = useMemo(() => {
     return computeTreeLayout(root, collapsed);
@@ -1132,6 +1155,7 @@ export default function MindMapExplorer() {
             top_k: 8,
             include_contradictions: true,
             include_actions: true,
+            sources: Array.from(sourceFilter),
             conversation_key: "mindmap-explorer-ui",
           }),
         });
@@ -1145,7 +1169,7 @@ export default function MindMapExplorer() {
       }
     }
     loadRecallContext();
-  }, [query, activeProfileId]);
+  }, [query, activeProfileId, sourceFilter]);
 
   useEffect(() => {
     async function persistActiveProfile() {
@@ -1210,16 +1234,22 @@ export default function MindMapExplorer() {
   function jumpTo(id) {
     setSelectedId(id);
     expandPathTo(id);
-    // Center view around node
+    if (viewMode === "3d") {
+      setFocusNodeId(id);
+      return;
+    }
     const pos = layout.positions.get(id);
     if (pos) {
-      // pan so node is roughly centered
       setTx(240 - pos.x * scale);
       setTy(-pos.y * scale);
     }
   }
 
   function resetView() {
+    if (viewMode === "3d") {
+      setFocusNodeId("root");
+      return;
+    }
     setTx(120);
     setTy(0);
     setScale(1);
@@ -1311,7 +1341,7 @@ export default function MindMapExplorer() {
       const response = await fetch(
         `${API_BASE}/api/graph/search-datapoints?query=${encodeURIComponent(q)}&limit=20&type=${encodeURIComponent(
           profileSearchType,
-        )}`,
+        )}&sources=${encodeURIComponent(Array.from(sourceFilter).join(","))}`,
       );
       if (!response.ok) {
         setProfileSearchResults([]);
@@ -1372,8 +1402,95 @@ export default function MindMapExplorer() {
     }
   }
 
+  async function refreshImportStatus() {
+    try {
+      const response = await fetch(`${API_BASE}/api/import/status`);
+      if (!response.ok) return;
+      const body = await response.json();
+      setImportStats(body);
+    } catch {
+      setImportStats(null);
+    }
+  }
+
+  async function importCursorNotes() {
+    const lines = String(cursorImportText || "")
+      .split("\n")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (!lines.length) {
+      setImportStatusMessage("Add at least one Cursor chat note line.");
+      return;
+    }
+    try {
+      setImportLoading(true);
+      const chats = lines.map((line, index) => ({
+        chat_id: "manual-cursor-import",
+        turn_index: index,
+        title: "Manual Cursor import",
+        message: line,
+        tags: ["cursor", "manual_import"],
+        related_node_ids: [],
+      }));
+      const response = await fetch(`${API_BASE}/api/import/cursor-chats`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          conversation_key: "mindmap-explorer-ui",
+          workspace: "mindmap-demo",
+          chats,
+        }),
+      });
+      if (!response.ok) {
+        setImportStatusMessage("Cursor import failed.");
+        return;
+      }
+      const body = await response.json();
+      setImportStatusMessage(
+        `Cursor import: ${body.imported || 0} added, ${body.skipped_duplicates || 0} skipped.`,
+      );
+      await refreshImportStatus();
+      setCursorImportText("");
+    } catch {
+      setImportStatusMessage("Cursor import failed.");
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
+  async function importRecentGitCommits() {
+    try {
+      setImportLoading(true);
+      const response = await fetch(`${API_BASE}/api/import/git-history`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          conversation_key: "mindmap-explorer-ui",
+          repository: "mindmap-demo",
+          repo_path: gitRepoPath.trim() || ".",
+          branch: gitBranch.trim() || undefined,
+          limit: Number(gitCommitLimit) || 15,
+        }),
+      });
+      if (!response.ok) {
+        setImportStatusMessage("Git import failed.");
+        return;
+      }
+      const body = await response.json();
+      setImportStatusMessage(
+        `Git import: ${body.imported || 0} added, ${body.skipped_duplicates || 0} skipped.`,
+      );
+      await refreshImportStatus();
+    } catch {
+      setImportStatusMessage("Git import failed.");
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
   // Pan/zoom handlers
   useEffect(() => {
+    if (viewMode !== "2d") return undefined;
     const svg = svgRef.current;
     if (!svg) return undefined;
 
@@ -1435,7 +1552,7 @@ export default function MindMapExplorer() {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
     };
-  }, [tx, ty, scale]);
+  }, [tx, ty, scale, viewMode]);
 
   const nodeW = layout.metrics.nodeW;
   const nodeH = layout.metrics.nodeH;
@@ -1523,6 +1640,10 @@ export default function MindMapExplorer() {
       .filter(Boolean);
   }, [connectionData, layout.positions, nodeH, nodeW, overlayEnabled, visibleSet]);
 
+  const visibleConnectionData = useMemo(() => {
+    return connectionData.filter((m) => visibleSet.has(m.from_id) && visibleSet.has(m.to_id));
+  }, [connectionData, visibleSet]);
+
   const visibleNodes = useMemo(() => {
     return layout.visibleIds
       .map((id) => {
@@ -1535,8 +1656,19 @@ export default function MindMapExplorer() {
       .filter(Boolean);
   }, [layout.visibleIds, idMap, layout.positions]);
 
+  const forceGraphData = useMemo(() => {
+    return buildForceGraphData({
+      visibleNodes,
+      treeEdges: layout.edges,
+      connectionData: visibleConnectionData,
+      overlayEnabled,
+    });
+  }, [visibleNodes, layout.edges, visibleConnectionData, overlayEnabled]);
+
   const help =
-    "Controls: drag background to pan • scroll to zoom • click node to inspect • double-click node to collapse/expand • use search to jump.";
+    viewMode === "2d"
+      ? "Controls: drag background to pan • scroll to zoom • click node to inspect • double-click node to collapse/expand • use search to jump."
+      : "Controls: drag to orbit • scroll to zoom • right-drag to pan • click node to inspect • double-click node to collapse/expand.";
 
   return (
     <div className="flex h-[92vh] w-full bg-white text-neutral-900">
@@ -1715,6 +1847,68 @@ export default function MindMapExplorer() {
                 </div>
               </div>
             </div>
+            <div className="mt-2 rounded-md border p-2 text-[11px]">
+              <div className="font-semibold">Auto import context</div>
+              <textarea
+                value={cursorImportText}
+                onChange={(e) => setCursorImportText(e.target.value)}
+                placeholder="Paste Cursor chat lines (one per line)"
+                className="mt-1 h-20 w-full rounded border px-2 py-1"
+              />
+              <div className="mt-1 grid grid-cols-2 gap-1">
+                <input
+                  value={gitRepoPath}
+                  onChange={(e) => setGitRepoPath(e.target.value)}
+                  placeholder="Repo path (default .)"
+                  className="w-full rounded border px-2 py-1"
+                />
+                <input
+                  value={gitBranch}
+                  onChange={(e) => setGitBranch(e.target.value)}
+                  placeholder="Branch (optional)"
+                  className="w-full rounded border px-2 py-1"
+                />
+                <input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={gitCommitLimit}
+                  onChange={(e) => setGitCommitLimit(Number(e.target.value))}
+                  placeholder="Commit limit"
+                  className="w-full rounded border px-2 py-1"
+                />
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <button
+                  onClick={importCursorNotes}
+                  className="rounded border px-2 py-1 hover:bg-neutral-100"
+                  disabled={importLoading}
+                >
+                  {importLoading ? "Working..." : "Import cursor notes"}
+                </button>
+                <button
+                  onClick={importRecentGitCommits}
+                  className="rounded border px-2 py-1 hover:bg-neutral-100"
+                  disabled={importLoading}
+                >
+                  {importLoading ? "Working..." : "Import git commits"}
+                </button>
+                <button
+                  onClick={refreshImportStatus}
+                  className="rounded border px-2 py-1 hover:bg-neutral-100"
+                >
+                  Refresh import status
+                </button>
+              </div>
+              {importStatusMessage ? (
+                <div className="mt-1 text-neutral-600">{importStatusMessage}</div>
+              ) : null}
+              {importStats ? (
+                <div className="mt-1 text-neutral-600">
+                  Evidence: {importStats.evidence || 0} • Nodes: {importStats.nodes || 0}
+                </div>
+              ) : null}
+            </div>
           </div>
           <button
             onClick={exportJSON}
@@ -1799,6 +1993,35 @@ export default function MindMapExplorer() {
             </div>
           </div>
 
+          <div className="pt-2">
+            <div className="mb-2 text-xs font-medium">Evidence sources</div>
+            <div className="flex flex-wrap gap-2">
+              {EVIDENCE_SOURCES.map((source) => {
+                const on = sourceFilter.has(source);
+                return (
+                  <button
+                    key={source}
+                    onClick={() =>
+                      setSourceFilter((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(source)) next.delete(source);
+                        else next.add(source);
+                        if (!next.size) return new Set(EVIDENCE_SOURCES);
+                        return next;
+                      })
+                    }
+                    className={`rounded-full border px-2 py-1 text-[11px] ${
+                      on ? "bg-neutral-100" : ""
+                    }`}
+                    title="Toggle source filter for recall and datapoint search"
+                  >
+                    {source}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="pt-3">
             <div className="mb-2 text-xs font-medium">Tag filter</div>
             <div className="flex flex-wrap gap-2">
@@ -1861,93 +2084,69 @@ export default function MindMapExplorer() {
       <div className="relative flex-1">
         <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
           <div className="rounded-md border bg-white px-3 py-2 text-xs">
-            Zoom: {(scale * 100).toFixed(0)}% • Nodes: {layout.visibleIds.length}
+            {viewMode === "2d"
+              ? `Zoom: ${(scale * 100).toFixed(0)}% • Nodes: ${layout.visibleIds.length}`
+              : `3D view • Nodes: ${layout.visibleIds.length}`}
           </div>
           <div className="rounded-md border bg-white px-3 py-2 text-xs text-neutral-600">
-            Tip: double-click a node to collapse/expand
+            {viewMode === "2d"
+              ? "Tip: double-click a node to collapse/expand"
+              : "Tip: drag to orbit and double-click to collapse/expand"}
+          </div>
+          <div className="rounded-md border bg-white px-2 py-1 text-xs">
+            <div className="inline-flex rounded-md border">
+              <button
+                data-testid="toggle-2d"
+                onClick={() => setViewMode("2d")}
+                className={`px-2 py-1 ${viewMode === "2d" ? "bg-neutral-100" : ""}`}
+              >
+                2D
+              </button>
+              <button
+                data-testid="toggle-3d"
+                onClick={() => setViewMode("3d")}
+                className={`border-l px-2 py-1 ${viewMode === "3d" ? "bg-neutral-100" : ""}`}
+              >
+                3D
+              </button>
+            </div>
           </div>
         </div>
 
-        <svg ref={svgRef} className="h-full w-full cursor-grab bg-neutral-50">
-          <g transform={`translate(${tx}, ${ty}) scale(${scale})`}>
-            {/* edges */}
-            {edges.map((e) => (
-              <path
-                key={`${e.a}->${e.b}`}
-                d={e.d}
-                fill="none"
-                stroke="#9ca3af" // gray-400
-                strokeWidth={1.2}
-              />
-            ))}
-
-            {/* relationship overlay edges */}
-            {overlayEdges.map((e) => (
-              <line
-                key={e.id}
-                x1={e.x1}
-                y1={e.y1}
-                x2={e.x2}
-                y2={e.y2}
-                stroke={e.type === "conflicts_with" ? "#ef4444" : "#6366f1"}
-                strokeWidth={1 + e.score * 2}
-                strokeDasharray={e.type === "depends_on" ? "6 3" : "3 3"}
-                opacity={0.85}
-              />
-            ))}
-
-            {/* nodes */}
-            {visibleNodes.map(({ id, n, p }) => {
-              const isCollapsed = collapsed.get(id) === true;
-              const kids = (n.children || []).length;
-              const style = nodeStyle(id, n);
-              return (
-                <g
-                  key={id}
-                  transform={`translate(${p.x}, ${p.y})`}
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    setSelectedId(id);
-                  }}
-                  onDoubleClick={(ev) => {
-                    ev.stopPropagation();
-                    if (kids > 0) toggleCollapse(id);
-                  }}
-                  style={{ cursor: "pointer" }}
-                >
-                  <rect x={0} y={0} rx={10} ry={10} width={nodeW} height={nodeH} {...style} />
-                  <text x={12} y={18} fontSize={12} fontWeight={600} fill="#111827">
-                    {n.label.length > 26 ? `${n.label.slice(0, 26)}…` : n.label}
-                  </text>
-                  <text x={12} y={34} fontSize={10} fill="#6b7280">
-                    {(n.tags || []).slice(0, 3).join(" · ")}
-                    {(n.tags || []).length > 3 ? " …" : ""}
-                  </text>
-
-                  {kids > 0 ? (
-                    <g transform={`translate(${nodeW - 20}, ${nodeH / 2})`}>
-                      <circle
-                        r={8}
-                        fill={isCollapsed ? "#111827" : "white"}
-                        stroke="#111827"
-                        strokeWidth={1}
-                      />
-                      <text
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                        fontSize={10}
-                        fontWeight={700}
-                        fill={isCollapsed ? "white" : "#111827"}
-                      >
-                        {isCollapsed ? "+" : "−"}
-                      </text>
-                    </g>
-                  ) : null}
-                </g>
-              );
-            })}
-          </g>
-        </svg>
+        {viewMode === "2d" ? (
+          <MindMap2DView
+            svgRef={svgRef}
+            tx={tx}
+            ty={ty}
+            scale={scale}
+            edges={edges}
+            overlayEdges={overlayEdges}
+            visibleNodes={visibleNodes}
+            collapsed={collapsed}
+            nodeW={nodeW}
+            nodeH={nodeH}
+            nodeStyle={nodeStyle}
+            onSelectNode={setSelectedId}
+            onToggleCollapse={toggleCollapse}
+          />
+        ) : (
+          <Suspense
+            fallback={
+              <div className="flex h-full w-full items-center justify-center bg-neutral-50 text-sm text-neutral-600">
+                Loading 3D map...
+              </div>
+            }
+          >
+            <MindMap3DView
+              graphData={forceGraphData}
+              selectedId={selectedId}
+              selectedPathIds={selectedPath}
+              onSelectNode={setSelectedId}
+              onToggleCollapse={toggleCollapse}
+              focusNodeId={focusNodeId}
+            />
+          </Suspense>
+        )}
       </div>
 
       {/* Right panel */}
@@ -2111,7 +2310,7 @@ export default function MindMapExplorer() {
                     : recallData
                       ? `${(recallData.matches || []).length} matches • ${(
                           recallData.contradictions || []
-                        ).length} contradictions`
+                        ).length} contradictions • ${Array.from(sourceFilter).length} sources`
                       : "Type in Search to run recall_context"}
                 </div>
                 {recallData ? (
@@ -2126,6 +2325,15 @@ export default function MindMapExplorer() {
                         </div>
                         <div className="mt-1 text-[10px] text-neutral-600">
                           {(m.relationship_types || []).slice(0, 3).join(" · ") || "no relationships"}
+                        </div>
+                        <div className="mt-1 text-[10px] text-neutral-600">
+                          {(m.evidence || [])
+                            .slice(0, 2)
+                            .map((ev) => {
+                              const cap = ev.capability?.labels?.[0];
+                              return `${ev.source}${cap ? ` (${cap})` : ""}`;
+                            })
+                            .join(" • ") || "no evidence"}
                         </div>
                       </div>
                     ))}

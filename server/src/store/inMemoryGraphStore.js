@@ -71,6 +71,8 @@ export class InMemoryGraphStore {
       profile_scores: event.profile_scores || {},
       classification_confidence: event.classification_confidence || 0,
       needs_review: Boolean(event.needs_review),
+      import_metadata: event.import_metadata || undefined,
+      capability: event.capability || undefined,
     });
     this.eventByHash.set(event.hash_signature, event.event_id);
     return { duplicate: false, event };
