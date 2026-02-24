@@ -74,7 +74,13 @@ describe("mindmap api integration", () => {
     const app = buildApp();
     app.locals.autoSync = {
       getStatus: () => ({ enabled: true, running: false }),
-      runOnce: async () => ({ enabled: true, running: false, last_trigger: "api" }),
+      runOnce: async () => ({
+        enabled: true,
+        running: false,
+        last_trigger: "api",
+        last_result: "success",
+        last_error: "",
+      }),
     };
     const cursorImport = await request(app).post("/api/import/cursor-chats").send({
       conversation_key: "import-cursor-api",
@@ -126,5 +132,22 @@ describe("mindmap api integration", () => {
     expect(runAutoSync.status).toBe(200);
     expect(runAutoSync.body.ok).toBe(true);
     expect(runAutoSync.body.status.last_trigger).toBe("api");
+  });
+
+  it("returns error semantics for failed auto-sync run", async () => {
+    const app = buildApp();
+    app.locals.autoSync = {
+      getStatus: () => ({ enabled: true, running: false }),
+      runOnce: async () => ({
+        enabled: true,
+        running: false,
+        last_result: "failed",
+        last_error: "git unavailable (/bad/path)",
+      }),
+    };
+    const runAutoSync = await request(app).post("/api/import/auto-sync/run");
+    expect(runAutoSync.status).toBe(503);
+    expect(runAutoSync.body.ok).toBe(false);
+    expect(runAutoSync.body.error).toContain("git unavailable");
   });
 });

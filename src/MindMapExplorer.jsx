@@ -1501,11 +1501,21 @@ export default function MindMapExplorer() {
       const response = await fetch(`${API_BASE}/api/import/auto-sync/run`, {
         method: "POST",
       });
-      if (!response.ok) {
-        setImportStatusMessage("Auto-sync run failed.");
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body?.ok === false) {
+        const detail = body?.error || body?.status?.last_error || "Auto-sync run failed.";
+        setImportStatusMessage(`Auto-sync run failed: ${detail}`);
+        await refreshImportStatus();
         return;
       }
-      setImportStatusMessage("Auto-sync run completed.");
+      const result = body?.status?.last_result || "success";
+      if (result === "partial") {
+        setImportStatusMessage(
+          `Auto-sync partial success: ${body?.status?.last_error || "some sources unavailable."}`,
+        );
+      } else {
+        setImportStatusMessage("Auto-sync run completed.");
+      }
       await refreshImportStatus();
     } catch {
       setImportStatusMessage("Auto-sync run failed.");
@@ -2005,6 +2015,15 @@ export default function MindMapExplorer() {
                     </span>
                   ) : null}
                 </div>
+              ) : null}
+              {importStats?.auto_sync?.paths ? (
+                <div className="mt-1 text-neutral-600">
+                  Git path: {importStats.auto_sync.paths.git_repo_path || "(auto)"} • Cursor path:{" "}
+                  {importStats.auto_sync.paths.cursor_transcripts_dir || "(auto)"}
+                </div>
+              ) : null}
+              {importStats?.auto_sync?.last_error ? (
+                <div className="mt-1 text-amber-700">{importStats.auto_sync.last_error}</div>
               ) : null}
             </div>
           </div>

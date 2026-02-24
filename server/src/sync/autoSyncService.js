@@ -97,6 +97,15 @@ async function writeSyncState(statePath, state) {
   await fs.writeFile(statePath, JSON.stringify(state, null, 2));
 }
 
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class AutoSyncService {
   constructor(service, options = {}) {
     this.service = service;
@@ -120,9 +129,18 @@ export class AutoSyncService {
       running: false,
       last_run_at: null,
       last_error: "",
+      last_result: "idle",
       git: { imported: 0, skipped_duplicates: 0, total: 0 },
       cursor: { imported: 0, skipped_duplicates: 0, total: 0, files_scanned: 0 },
-      transcripts_dir: this.options.cursor_transcripts_dir,
+      diagnostics: {
+        git: { available: true, error: "" },
+        cursor: { available: true, error: "" },
+      },
+      paths: {
+        git_repo_path: this.options.git_repo_path,
+        cursor_transcripts_dir: this.options.cursor_transcripts_dir,
+        state_path: this.options.state_path,
+      },
     };
   }
 
@@ -135,65 +153,124 @@ export class AutoSyncService {
     this.running = true;
     this.status.running = true;
     this.status.last_error = "";
+    this.status.last_result = "running";
     this.status.last_trigger = trigger;
     const state = await readSyncState(this.options.state_path);
 
     try {
+      this.status.diagnostics = {
+        git: { available: true, error: "" },
+        cursor: { available: true, error: "" },
+      };
+      const errors = [];
+      let importedSources = 0;
+
       if (this.options.sync_git) {
-        const git = await this.service.importGitHistory({
-          conversation_key: "auto-sync-git",
-          repository: path.basename(this.options.git_repo_path || process.cwd()),
-          repo_path: this.options.git_repo_path,
-          branch: this.options.git_branch || undefined,
-          limit: this.options.git_limit,
-        });
-        this.status.git = {
-          imported: git.imported || 0,
-          skipped_duplicates: git.skipped_duplicates || 0,
-          total: git.total || 0,
-        };
+        const gitRepoPath = this.options.git_repo_path || process.cwd();
+        const gitMarkerPath = path.join(gitRepoPath, ".git");
+        const repoExists = await pathExists(gitRepoPath);
+        const hasGitMarker = await pathExists(gitMarkerPath);
+        if (!repoExists || !hasGitMarker) {
+          this.status.diagnostics.git = {
+            available: false,
+            error: `Git repo path is not valid: ${gitRepoPath}`,
+          };
+          errors.push(`git unavailable (${gitRepoPath})`);
+        } else {
+          try {
+            const git = await this.service.importGitHistory({
+              conversation_key: "auto-sync-git",
+              repository: path.basename(this.options.git_repo_path || process.cwd()),
+              repo_path: this.options.git_repo_path,
+              branch: this.options.git_branch || undefined,
+              limit: this.options.git_limit,
+            });
+            this.status.git = {
+              imported: git.imported || 0,
+              skipped_duplicates: git.skipped_duplicates || 0,
+              total: git.total || 0,
+            };
+            importedSources += 1;
+          } catch (error) {
+            this.status.diagnostics.git = {
+              available: false,
+              error: error?.message || "Git sync failed.",
+            };
+            errors.push("git sync failed");
+          }
+        }
       }
 
       if (this.options.sync_cursor) {
-        const files = await walkJsonlFiles(this.options.cursor_transcripts_dir);
-        let imported = 0;
-        let skipped = 0;
-        let total = 0;
-        for (const transcriptPath of files) {
-          const fileRaw = await fs.readFile(transcriptPath, "utf8").catch(() => "");
-          const lines = fileRaw
-            .split("\n")
-            .map((x) => x.trim())
-            .filter(Boolean);
-          const previousOffset = Number(state.cursor_file_offsets[transcriptPath] || 0);
-          const nextLines = lines.slice(previousOffset);
-          const chats = buildCursorChatImportRows(nextLines, { baseTurnIndex: previousOffset });
-          if (chats.length) {
-            const conversationId = path.basename(path.dirname(transcriptPath));
-            const result = await this.service.importCursorChats({
-              conversation_key: `auto-sync-cursor:${conversationId}`,
-              workspace: process.cwd(),
-              chats,
-            });
-            imported += result.imported || 0;
-            skipped += result.skipped_duplicates || 0;
-            total += result.total || 0;
+        const transcriptDir = this.options.cursor_transcripts_dir;
+        const transcriptExists = await pathExists(transcriptDir);
+        if (!transcriptExists) {
+          this.status.diagnostics.cursor = {
+            available: false,
+            error: `Cursor transcripts path not found: ${transcriptDir}`,
+          };
+          errors.push(`cursor unavailable (${transcriptDir})`);
+        } else {
+          try {
+            const files = await walkJsonlFiles(transcriptDir);
+            let imported = 0;
+            let skipped = 0;
+            let total = 0;
+            for (const transcriptPath of files) {
+              const fileRaw = await fs.readFile(transcriptPath, "utf8").catch(() => "");
+              const lines = fileRaw
+                .split("\n")
+                .map((x) => x.trim())
+                .filter(Boolean);
+              const previousOffset = Number(state.cursor_file_offsets[transcriptPath] || 0);
+              const nextLines = lines.slice(previousOffset);
+              const chats = buildCursorChatImportRows(nextLines, { baseTurnIndex: previousOffset });
+              if (chats.length) {
+                const conversationId = path.basename(path.dirname(transcriptPath));
+                const result = await this.service.importCursorChats({
+                  conversation_key: `auto-sync-cursor:${conversationId}`,
+                  workspace: process.cwd(),
+                  chats,
+                });
+                imported += result.imported || 0;
+                skipped += result.skipped_duplicates || 0;
+                total += result.total || 0;
+              }
+              state.cursor_file_offsets[transcriptPath] = lines.length;
+            }
+            this.status.cursor = {
+              imported,
+              skipped_duplicates: skipped,
+              total,
+              files_scanned: files.length,
+            };
+            importedSources += 1;
+          } catch (error) {
+            this.status.diagnostics.cursor = {
+              available: false,
+              error: error?.message || "Cursor sync failed.",
+            };
+            errors.push("cursor sync failed");
           }
-          state.cursor_file_offsets[transcriptPath] = lines.length;
         }
-        this.status.cursor = {
-          imported,
-          skipped_duplicates: skipped,
-          total,
-          files_scanned: files.length,
-        };
       }
 
       state.last_run_at = new Date().toISOString();
       await writeSyncState(this.options.state_path, state);
       this.status.last_run_at = state.last_run_at;
+      if (errors.length) {
+        this.status.last_error = errors.join("; ");
+      }
+      if (!importedSources && errors.length) {
+        this.status.last_result = "failed";
+      } else if (importedSources > 0 && errors.length) {
+        this.status.last_result = "partial";
+      } else {
+        this.status.last_result = "success";
+      }
     } catch (error) {
       this.status.last_error = error?.message || "Auto-sync run failed.";
+      this.status.last_result = "failed";
     } finally {
       this.running = false;
       this.status.running = false;
@@ -221,4 +298,5 @@ export class AutoSyncService {
 export const __testables = {
   buildCursorChatImportRows,
   inferCursorTranscriptsDir,
+  pathExists,
 };

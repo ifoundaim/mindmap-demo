@@ -62,6 +62,7 @@ describe("auto sync service", () => {
     };
 
     const statePath = path.join(tempRoot, "state.json");
+    await fs.mkdir(path.join(tempRoot, ".git"), { recursive: true });
     const sync = new AutoSyncService(fakeService, {
       enabled: true,
       interval_ms: 999999,
@@ -80,5 +81,54 @@ describe("auto sync service", () => {
     const rawState = await fs.readFile(statePath, "utf8");
     const parsedState = JSON.parse(rawState);
     expect(parsedState.cursor_file_offsets[transcriptPath]).toBe(1);
+  });
+
+  it("reports partial success when cursor path is missing but git succeeds", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mindmap-autosync-partial-"));
+    const fakeService = {
+      async importGitHistory() {
+        return { imported: 1, skipped_duplicates: 0, total: 1 };
+      },
+      async importCursorChats() {
+        return { imported: 0, skipped_duplicates: 0, total: 0 };
+      },
+    };
+    const sync = new AutoSyncService(fakeService, {
+      enabled: true,
+      sync_git: true,
+      sync_cursor: true,
+      git_repo_path: tempRoot,
+      cursor_transcripts_dir: path.join(tempRoot, "missing-transcripts-dir"),
+      state_path: path.join(tempRoot, "state.json"),
+    });
+    await fs.mkdir(path.join(tempRoot, ".git"), { recursive: true });
+    const status = await sync.runOnce("test");
+    expect(status.last_result).toBe("partial");
+    expect(status.diagnostics.cursor.available).toBe(false);
+    expect(status.git.imported).toBe(1);
+  });
+
+  it("reports failure when both git and cursor defaults are unavailable", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mindmap-autosync-fail-"));
+    const fakeService = {
+      async importGitHistory() {
+        return { imported: 0, skipped_duplicates: 0, total: 0 };
+      },
+      async importCursorChats() {
+        return { imported: 0, skipped_duplicates: 0, total: 0 };
+      },
+    };
+    const sync = new AutoSyncService(fakeService, {
+      enabled: true,
+      sync_git: true,
+      sync_cursor: true,
+      git_repo_path: path.join(tempRoot, "not-a-repo"),
+      cursor_transcripts_dir: path.join(tempRoot, "missing-transcripts"),
+      state_path: path.join(tempRoot, "state.json"),
+    });
+    const status = await sync.runOnce("test");
+    expect(status.last_result).toBe("failed");
+    expect(status.last_error).toContain("git unavailable");
+    expect(status.last_error).toContain("cursor unavailable");
   });
 });

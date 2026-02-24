@@ -35,3 +35,10 @@
 - Implemented ephemeral mini datapoint nodes in the 3D graph adapter, sourced from node metadata (tags/detail snippets) and relationship overlay records, with bounded count and distinct styling.
 - Added interaction safeguards so datapoint mini-node clicks update HUD focus without replacing the right-panel parent selection.
 - Expanded frontend regression tests to cover HUD visibility, datapoint expand/hide behavior, and parent-selection continuity in 3D mode.
+
+## 2026-02-22 (Auto-sync default path hardening + diagnostics)
+
+- Hardened `AutoSyncService` preflight logic to validate auto-detected default git/cursor paths before sync, with source-specific diagnostics and `success`/`partial`/`failed` run results.
+- Updated auto-sync run endpoint semantics to return failure payloads when both defaults are unavailable, while preserving partial-success behavior for single-source availability.
+- Improved `MindMapExplorer` auto-import UX by surfacing exact auto-sync failure details and detected default paths directly in the panel.
+- Added regression coverage for missing-default scenarios, partial success/failure API semantics, and frontend diagnostics rendering.

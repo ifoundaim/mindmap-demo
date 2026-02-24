@@ -84,6 +84,34 @@ beforeEach(() => {
     if (url.includes("/api/mcp/recall-context")) {
       return createJsonResponse({ memories: [], contradictions: [] });
     }
+    if (url.includes("/api/import/status")) {
+      return createJsonResponse({
+        evidence: 0,
+        nodes: 0,
+        auto_sync: {
+          enabled: true,
+          running: false,
+          last_error: "",
+          paths: {
+            git_repo_path: ".",
+            cursor_transcripts_dir: "/tmp/agent-transcripts",
+          },
+        },
+      });
+    }
+    if (url.includes("/api/import/auto-sync/run")) {
+      return createJsonResponse(
+        {
+          ok: false,
+          error: "git unavailable (/bad/path)",
+          status: {
+            last_result: "failed",
+            last_error: "git unavailable (/bad/path)",
+          },
+        },
+        false,
+      );
+    }
     return createJsonResponse({}, false);
   });
 });
@@ -222,5 +250,18 @@ describe("MindMapExplorer 2D/3D regressions", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
+  });
+
+  it("shows auto-sync failure details and detected default paths", async () => {
+    render(<MindMapExplorer />);
+    fireEvent.click(await screen.findByRole("button", { name: /Refresh import status/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/Git path:/i)).toHaveTextContent("Cursor path: /tmp/agent-transcripts"),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Run auto-sync now/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/Auto-sync run failed:/i)).toHaveTextContent("git unavailable (/bad/path)"),
+    );
   });
 });

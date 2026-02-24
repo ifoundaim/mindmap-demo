@@ -122,6 +122,15 @@ export function createApp(service) {
         return;
       }
       const status = await autoSync.runOnce("api");
+      const ok = status?.last_result === "success" || status?.last_result === "partial";
+      if (!ok) {
+        res.status(503).json({
+          ok: false,
+          error: status?.last_error || "Auto-sync run failed.",
+          status,
+        });
+        return;
+      }
       res.json({ ok: true, status });
     } catch (error) {
       res.status(500).json({ error: error.message });
