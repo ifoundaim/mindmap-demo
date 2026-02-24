@@ -22,6 +22,13 @@
 - Updated `MindMapExplorer` with evidence source filters and an in-app auto-import panel (manual Cursor note import + recent git import + import status refresh).
 - Added regression coverage for import schemas, importer service behavior, API integration, and frontend import controls/endpoints.
 
+## 2026-02-22 (Automatic transcript/git sync worker)
+
+- Added an environment-gated auto-sync worker that periodically imports git history and Cursor local transcript turns, with checkpoint persistence to avoid re-importing processed lines.
+- Wired auto-sync into API startup and surfaced status/trigger endpoints (`/api/import/status` now includes `auto_sync`; added `POST /api/import/auto-sync/run`).
+- Updated the UI auto-import panel with a one-click `Run auto-sync now` action and auto-sync state visibility.
+- Added regression coverage for transcript extraction/checkpoint behavior and API auto-sync status/run flows; documented configuration in `.env` example files.
+
 ## 2026-02-22 (3D HUD + datapoint orbit interactions)
 
 - Added 3D node HUD support in `MindMapExplorer`/`MindMap3DView`, including selected-node summaries (details/tags/relationship highlights) and in-canvas controls for focus and datapoint expansion.

@@ -94,7 +94,7 @@ export function createApp(service) {
     }
   });
 
-  app.get("/api/import/status", async (_req, res) => {
+  app.get("/api/import/status", async (req, res) => {
     try {
       const nodes = await service.store.listNodes();
       const evidence = Array.from(service.store.evidence?.values?.() || []);
@@ -107,7 +107,22 @@ export function createApp(service) {
         nodes: nodes.length,
         evidence: evidence.length,
         source_counts: bySource,
+        auto_sync: req?.app?.locals?.autoSync?.getStatus?.() || null,
       });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/import/auto-sync/run", async (_req, res) => {
+    try {
+      const autoSync = _req?.app?.locals?.autoSync;
+      if (!autoSync) {
+        res.status(400).json({ error: "Auto-sync is not configured." });
+        return;
+      }
+      const status = await autoSync.runOnce("api");
+      res.json({ ok: true, status });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

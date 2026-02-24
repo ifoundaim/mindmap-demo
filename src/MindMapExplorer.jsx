@@ -1495,6 +1495,25 @@ export default function MindMapExplorer() {
     }
   }
 
+  async function runAutoSyncNow() {
+    try {
+      setImportLoading(true);
+      const response = await fetch(`${API_BASE}/api/import/auto-sync/run`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        setImportStatusMessage("Auto-sync run failed.");
+        return;
+      }
+      setImportStatusMessage("Auto-sync run completed.");
+      await refreshImportStatus();
+    } catch {
+      setImportStatusMessage("Auto-sync run failed.");
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
   // Pan/zoom handlers
   useEffect(() => {
     if (viewMode !== "2d") return undefined;
@@ -1960,6 +1979,13 @@ export default function MindMapExplorer() {
                 >
                   Refresh import status
                 </button>
+                <button
+                  onClick={runAutoSyncNow}
+                  className="rounded border px-2 py-1 hover:bg-neutral-100"
+                  disabled={importLoading}
+                >
+                  {importLoading ? "Working..." : "Run auto-sync now"}
+                </button>
               </div>
               {importStatusMessage ? (
                 <div className="mt-1 text-neutral-600">{importStatusMessage}</div>
@@ -1967,6 +1993,17 @@ export default function MindMapExplorer() {
               {importStats ? (
                 <div className="mt-1 text-neutral-600">
                   Evidence: {importStats.evidence || 0} • Nodes: {importStats.nodes || 0}
+                  {importStats.auto_sync ? (
+                    <span>
+                      {" "}
+                      • Auto-sync:{" "}
+                      {importStats.auto_sync.enabled
+                        ? importStats.auto_sync.running
+                          ? "running"
+                          : "enabled"
+                        : "disabled"}
+                    </span>
+                  ) : null}
                 </div>
               ) : null}
             </div>
