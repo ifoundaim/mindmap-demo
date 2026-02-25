@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
-import { EDGE_TYPES } from "../domain/constants.js";
+import { EDGE_TYPES, SOURCE_TYPES } from "../domain/constants.js";
 import { RecallContextOutputSchema } from "../helix/schema.js";
 
 const MEMORY_FIRST_POLICY = `Memory-first behavior:
@@ -144,6 +144,47 @@ export function createMcpServer(service) {
   );
 
   server.registerTool(
+    "mindmap.collect_batch",
+    {
+      description:
+        "Ingest a batch of chat entries in one call with stable turn keys, optional context fragments, and optional edge links.",
+      inputSchema: {
+        conversation_key: z.string(),
+        batch_id: z.string().optional(),
+        entries: z.array(
+          z.object({
+            turn_key: z.string().optional(),
+            message: z.string(),
+            raw_excerpt: z.string().optional(),
+            source: z.enum(["mcp_initial", "mcp_explicit"]).default("mcp_explicit"),
+            tags: z.array(z.string()).default([]),
+            related_node_ids: z.array(z.string()).default([]),
+            context: z.record(z.string(), z.unknown()).optional(),
+          }),
+        ),
+        links: z
+          .array(
+            z.object({
+              from_id: z.string(),
+              to_id: z.string(),
+              type: z.enum(EDGE_TYPES),
+              weight: z.number().min(0).max(1).default(0.5),
+              evidence_id: z.string().optional(),
+            }),
+          )
+          .default([]),
+      },
+    },
+    async (args) => {
+      const result = await service.collectBatch(args);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.registerTool(
     "mindmap.link_nodes",
     {
       description: "Create or strengthen a typed edge between two nodes.",
@@ -220,6 +261,30 @@ export function createMcpServer(service) {
     },
     async ({ limit }) => {
       const result = { actions: await service.recommendNextActions(limit) };
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.registerTool(
+    "mindmap.export_collection",
+    {
+      description:
+        "Export a structured graph collection bundle (nodes, edges, evidence, profiles) with optional conversation/source filters.",
+      inputSchema: {
+        conversation_key: z.string().optional(),
+        include_nodes: z.boolean().default(true),
+        include_edges: z.boolean().default(true),
+        include_evidence: z.boolean().default(true),
+        include_profiles: z.boolean().default(true),
+        sources: z.array(z.enum(SOURCE_TYPES)).default([]),
+        limit_evidence: z.number().int().min(1).max(5000).default(2000),
+      },
+    },
+    async (args) => {
+      const result = await service.exportCollection(args);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,

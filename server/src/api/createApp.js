@@ -137,6 +137,24 @@ export function createApp(service) {
     }
   });
 
+  app.post("/api/collection/batch", async (req, res) => {
+    try {
+      const result = await service.collectBatch(req.body || {});
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/collection/export", async (req, res) => {
+    try {
+      const result = await service.exportCollection(req.body || {});
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
   app.get("/api/graph/connections", async (req, res) => {
     const nodeId = String(req.query.nodeId || "");
     const limit = Number(req.query.limit || 8);

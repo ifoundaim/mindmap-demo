@@ -11,6 +11,8 @@ import {
   GetContextProfileSchema,
   ImportCursorChatsSchema,
   ImportGitHistorySchema,
+  CollectBatchSchema,
+  ExportCollectionSchema,
 } from "../helix/schema.js";
 import {
   scoreConnections,
@@ -575,6 +577,147 @@ export class MindMapService {
       skipped_duplicates: results.filter((x) => !x.inserted).length,
       total: results.length,
       results,
+    };
+  }
+
+  async collectBatch(payload) {
+    metrics.increment("tool_calls");
+    const parsed = CollectBatchSchema.parse(payload);
+    const batchId = parsed.batch_id || `batch-${Date.now()}`;
+    const itemResults = [];
+    let entriesInserted = 0;
+    let entriesDeduped = 0;
+    let contextItemsInserted = 0;
+
+    for (let idx = 0; idx < parsed.entries.length; idx += 1) {
+      const entry = parsed.entries[idx];
+      const turnKey = entry.turn_key || `${batchId}-turn-${idx + 1}`;
+      const basePayload = {
+        conversation_key: parsed.conversation_key,
+        turn_key: turnKey,
+        message: entry.message,
+        raw_excerpt: entry.raw_excerpt,
+        tags: entry.tags || [],
+        related_node_ids: entry.related_node_ids || [],
+        context: entry.context,
+      };
+
+      const outcome =
+        entry.source === "mcp_initial"
+          ? await this.sessionBootstrap(basePayload)
+          : await this.logInsight(basePayload);
+
+      const inserted = Boolean(outcome?.inserted || outcome?.result?.inserted);
+      if (inserted) entriesInserted += 1;
+      else entriesDeduped += 1;
+      contextItemsInserted += Number(outcome?.captured_items || 0) - Number(inserted);
+
+      itemResults.push({
+        turn_key: turnKey,
+        source: entry.source,
+        inserted,
+        skipped_duplicates: Number(!inserted),
+        event_id: outcome?.eventId || outcome?.result?.eventId || outcome?.existingEventId || null,
+      });
+    }
+
+    const linked = [];
+    for (const link of parsed.links || []) {
+      const result = await this.linkNodes(link);
+      linked.push(result.edge);
+    }
+
+    return {
+      conversation_key: parsed.conversation_key,
+      batch_id: batchId,
+      totals: {
+        entries_received: parsed.entries.length,
+        entries_inserted: entriesInserted,
+        entries_deduped: entriesDeduped,
+        context_items_inserted: Math.max(0, contextItemsInserted),
+        links_applied: linked.length,
+      },
+      items: itemResults,
+      linked_edges: linked,
+    };
+  }
+
+  async exportCollection(payload = {}) {
+    const parsed = ExportCollectionSchema.parse(payload);
+    const allNodes = await maybeAwait(this.store.listNodes());
+    const allEdges = await maybeAwait(this.store.listEdges());
+    const allEvidence = Array.from(this.store.evidence?.values?.() || []);
+    const allProfiles = await maybeAwait(this.store.listProfiles?.() || []);
+
+    let filteredEvidence = parsed.include_evidence ? allEvidence : [];
+    if (parsed.conversation_key) {
+      filteredEvidence = filteredEvidence.filter((e) => e.conversation_key === parsed.conversation_key);
+    }
+    if (parsed.sources?.length) {
+      const sourceSet = new Set(parsed.sources);
+      filteredEvidence = filteredEvidence.filter((e) => sourceSet.has(e.source));
+    }
+
+    filteredEvidence = filteredEvidence
+      .slice()
+      .sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")))
+      .slice(0, parsed.limit_evidence);
+
+    const relevantNodeIds = new Set();
+    for (const e of filteredEvidence) {
+      for (const nodeId of e.related_node_ids || []) relevantNodeIds.add(nodeId);
+    }
+
+    const nodes = parsed.include_nodes
+      ? parsed.conversation_key
+        ? allNodes.filter((n) => relevantNodeIds.has(n.id))
+        : allNodes
+      : [];
+
+    const includedNodeIds = new Set(nodes.map((n) => n.id));
+    const edges = parsed.include_edges
+      ? parsed.conversation_key
+        ? allEdges.filter((e) => includedNodeIds.has(e.from_id) || includedNodeIds.has(e.to_id))
+        : allEdges
+      : [];
+
+    const sourceCounts = filteredEvidence.reduce((acc, e) => {
+      const source = e.source || "unknown";
+      acc[source] = (acc[source] || 0) + 1;
+      return acc;
+    }, {});
+
+    const conversationProfile = parsed.conversation_key
+      ? await maybeAwait(this.store.getConversationProfile(parsed.conversation_key))
+      : null;
+
+    return {
+      meta: {
+        generated_at: new Date().toISOString(),
+        conversation_key: parsed.conversation_key || null,
+        filters: {
+          sources: parsed.sources,
+          limit_evidence: parsed.limit_evidence,
+        },
+        counts: {
+          nodes: nodes.length,
+          edges: edges.length,
+          evidence: filteredEvidence.length,
+          profiles: parsed.include_profiles ? allProfiles.length : 0,
+        },
+        source_counts: sourceCounts,
+        conversation_profile: conversationProfile || null,
+      },
+      nodes: nodes.slice().sort((a, b) => a.id.localeCompare(b.id)),
+      edges: edges
+        .slice()
+        .sort((a, b) =>
+          `${a.from_id}:${a.type}:${a.to_id}`.localeCompare(`${b.from_id}:${b.type}:${b.to_id}`),
+        ),
+      evidence: filteredEvidence,
+      profiles: parsed.include_profiles
+        ? allProfiles.slice().sort((a, b) => a.profile_id.localeCompare(b.profile_id))
+        : [],
     };
   }
 

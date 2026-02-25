@@ -215,3 +215,38 @@ export const ImportGitHistorySchema = z.object({
     )
     .default([]),
 });
+
+export const CollectBatchEntrySchema = z.object({
+  turn_key: z.string().min(1).optional(),
+  message: z.string().min(1),
+  raw_excerpt: z.string().optional(),
+  source: z.enum(["mcp_initial", "mcp_explicit"]).default("mcp_explicit"),
+  tags: z.array(z.string()).default([]),
+  related_node_ids: z.array(z.string()).default([]),
+  context: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const CollectBatchLinkSchema = z.object({
+  from_id: z.string().min(1),
+  to_id: z.string().min(1),
+  type: z.enum(EDGE_TYPES),
+  weight: z.number().min(0).max(1).default(0.5),
+  evidence_id: z.string().optional(),
+});
+
+export const CollectBatchSchema = z.object({
+  conversation_key: z.string().min(1),
+  batch_id: z.string().min(1).optional(),
+  entries: z.array(CollectBatchEntrySchema).min(1),
+  links: z.array(CollectBatchLinkSchema).default([]),
+});
+
+export const ExportCollectionSchema = z.object({
+  conversation_key: z.string().min(1).optional(),
+  include_nodes: z.boolean().default(true),
+  include_edges: z.boolean().default(true),
+  include_evidence: z.boolean().default(true),
+  include_profiles: z.boolean().default(true),
+  sources: z.array(z.enum(SOURCE_TYPES)).default([]),
+  limit_evidence: z.number().int().min(1).max(5000).default(2000),
+});

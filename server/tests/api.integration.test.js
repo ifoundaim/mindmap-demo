@@ -150,4 +150,56 @@ describe("mindmap api integration", () => {
     expect(runAutoSync.body.ok).toBe(false);
     expect(runAutoSync.body.error).toContain("git unavailable");
   });
+
+  it("supports batch collection and structured export endpoints", async () => {
+    const app = buildApp();
+    const batch = await request(app).post("/api/collection/batch").send({
+      conversation_key: "api-batch-c1",
+      batch_id: "api-batch-1",
+      entries: [
+        {
+          turn_key: "turn-1",
+          message: "Release checklist depends on observability hardening",
+          source: "mcp_initial",
+          tags: ["release", "observability"],
+          related_node_ids: ["release-checklist", "observability"],
+          context: { owner: "platform", priority: "high" },
+        },
+        {
+          turn_key: "turn-2",
+          message: "Capture rollback protocol and runbook ownership",
+          source: "mcp_explicit",
+          tags: ["release", "runbook"],
+          related_node_ids: ["rollback-protocol"],
+        },
+      ],
+      links: [
+        {
+          from_id: "release-checklist",
+          to_id: "rollback-protocol",
+          type: "depends_on",
+          weight: 0.9,
+        },
+      ],
+    });
+    expect(batch.status).toBe(200);
+    expect(batch.body.totals.entries_received).toBe(2);
+    expect(batch.body.totals.links_applied).toBe(1);
+
+    const exported = await request(app).post("/api/collection/export").send({
+      conversation_key: "api-batch-c1",
+      include_nodes: true,
+      include_edges: true,
+      include_evidence: true,
+      include_profiles: true,
+      sources: ["mcp_initial", "mcp_explicit"],
+      limit_evidence: 100,
+    });
+    expect(exported.status).toBe(200);
+    expect(exported.body.meta.conversation_key).toBe("api-batch-c1");
+    expect(exported.body.meta.counts.evidence).toBeGreaterThan(0);
+    expect(Array.isArray(exported.body.nodes)).toBe(true);
+    expect(Array.isArray(exported.body.edges)).toBe(true);
+    expect(Array.isArray(exported.body.evidence)).toBe(true);
+  });
 });

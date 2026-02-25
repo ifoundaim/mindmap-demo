@@ -42,3 +42,11 @@
 - Updated auto-sync run endpoint semantics to return failure payloads when both defaults are unavailable, while preserving partial-success behavior for single-source availability.
 - Improved `MindMapExplorer` auto-import UX by surfacing exact auto-sync failure details and detected default paths directly in the panel.
 - Added regression coverage for missing-default scenarios, partial success/failure API semantics, and frontend diagnostics rendering.
+
+## 2026-02-25 (Batch collection + structured export)
+
+- Added MCP tools `mindmap.collect_batch` and `mindmap.export_collection` to support robust batched ingestion and organized graph/evidence/profile export.
+- Added new schemas/contracts for batched collection and collection export filters (`conversation_key`, source filtering, evidence limit, section include flags).
+- Implemented service methods `collectBatch()` and `exportCollection()` with deterministic batch summaries, dedupe-aware entry accounting, and structured metadata output.
+- Added API endpoints `POST /api/collection/batch` and `POST /api/collection/export` for non-MCP workflows.
+- Added regression coverage across schema contracts, service behavior, and API integration for the new collection/export flows.

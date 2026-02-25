@@ -220,4 +220,76 @@ describe("mindmap service dedupe + merge behavior", () => {
     expect(searched.matches.length).toBeGreaterThan(0);
     expect(searched.matches.every((m) => m.kind === "evidence")).toBe(true);
   });
+
+  it("collects batched chat entries with links for organized ingestion", async () => {
+    const service = createService();
+    const result = await service.collectBatch({
+      conversation_key: "batch-c1",
+      batch_id: "launch-batch",
+      entries: [
+        {
+          turn_key: "t1",
+          message: "Launch readiness depends on payment rail reliability",
+          source: "mcp_initial",
+          tags: ["launch", "payments"],
+          related_node_ids: ["launch-readiness", "payments"],
+          context: { owner: "ops", risk: "high" },
+        },
+        {
+          turn_key: "t2",
+          message: "Prioritize reliability dashboard before public rollout",
+          source: "mcp_explicit",
+          tags: ["launch", "dashboard"],
+          related_node_ids: ["reliability-dashboard"],
+        },
+      ],
+      links: [
+        {
+          from_id: "launch-readiness",
+          to_id: "reliability-dashboard",
+          type: "depends_on",
+          weight: 0.9,
+        },
+      ],
+    });
+
+    expect(result.totals.entries_received).toBe(2);
+    expect(result.totals.entries_inserted).toBeGreaterThan(0);
+    expect(result.totals.links_applied).toBe(1);
+
+    const linked = await service.findConnections({ nodeId: "launch-readiness", limit: 5 });
+    expect(linked.matches.some((m) => m.target?.id === "reliability-dashboard")).toBe(true);
+  });
+
+  it("exports structured collection bundles with conversation filters", async () => {
+    const service = createService();
+    await service.collectBatch({
+      conversation_key: "export-c1",
+      batch_id: "export-batch",
+      entries: [
+        {
+          turn_key: "e1",
+          message: "Document export coverage for durable backups",
+          source: "mcp_explicit",
+          tags: ["export", "backup"],
+          related_node_ids: ["export-pipeline"],
+        },
+      ],
+      links: [],
+    });
+
+    const bundle = await service.exportCollection({
+      conversation_key: "export-c1",
+      include_nodes: true,
+      include_edges: true,
+      include_evidence: true,
+      include_profiles: true,
+      sources: ["mcp_explicit"],
+      limit_evidence: 100,
+    });
+
+    expect(bundle.meta.conversation_key).toBe("export-c1");
+    expect(bundle.meta.counts.evidence).toBeGreaterThan(0);
+    expect(bundle.evidence.every((e) => e.source === "mcp_explicit")).toBe(true);
+  });
 });

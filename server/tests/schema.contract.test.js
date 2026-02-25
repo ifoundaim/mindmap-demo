@@ -9,6 +9,8 @@ import {
   GetContextProfileSchema,
   ImportCursorChatsSchema,
   ImportGitHistorySchema,
+  CollectBatchSchema,
+  ExportCollectionSchema,
 } from "../src/helix/schema.js";
 
 describe("MCP contract schemas", () => {
@@ -153,5 +155,45 @@ describe("MCP contract schemas", () => {
       ],
     });
     expect(parsed.commits[0].hash).toBe("abc123");
+  });
+
+  it("validates collect batch schema", () => {
+    const parsed = CollectBatchSchema.parse({
+      conversation_key: "batch-conv",
+      batch_id: "batch-1",
+      entries: [
+        {
+          turn_key: "t-1",
+          message: "Capture durable decision for launch sequencing",
+          source: "mcp_explicit",
+          tags: ["launch", "decision"],
+          related_node_ids: ["launch-plan"],
+        },
+      ],
+      links: [
+        {
+          from_id: "launch-plan",
+          to_id: "roadmap",
+          type: "depends_on",
+          weight: 0.8,
+        },
+      ],
+    });
+    expect(parsed.entries).toHaveLength(1);
+    expect(parsed.links).toHaveLength(1);
+  });
+
+  it("validates export collection schema", () => {
+    const parsed = ExportCollectionSchema.parse({
+      conversation_key: "batch-conv",
+      include_nodes: true,
+      include_edges: true,
+      include_evidence: true,
+      include_profiles: true,
+      sources: ["mcp_explicit", "cursor_chat"],
+      limit_evidence: 500,
+    });
+    expect(parsed.limit_evidence).toBe(500);
+    expect(parsed.sources).toContain("cursor_chat");
   });
 });
