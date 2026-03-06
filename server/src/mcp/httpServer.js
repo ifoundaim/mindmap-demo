@@ -12,6 +12,10 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));
 const transports = {};
 
+// Singleton store — shared across all sessions so data persists between connections.
+const store = createGraphStore();
+const service = new MindMapService(store);
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "mindmap-mcp-http" });
 });
@@ -41,8 +45,6 @@ app.post("/mcp", async (req, res) => {
         if (sid && transports[sid]) delete transports[sid];
       };
 
-      const store = createGraphStore();
-      const service = new MindMapService(store);
       const server = createMcpServer(service);
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);

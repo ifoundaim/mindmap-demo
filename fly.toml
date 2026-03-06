@@ -1,0 +1,30 @@
+# fly.toml - mindmap MCP HTTP server
+app = "mindmap-mcp"
+primary_region = "iad"
+
+[build]
+
+[env]
+  MCP_HTTP_PORT = "8080"
+  GRAPH_DATA_PATH = "/data/graph.json"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[[mounts]]
+  source = "mindmap_data"
+  destination = "/data"
+  initial_size = "1gb"
