@@ -10,7 +10,8 @@ import { createMcpServer } from "./createMcpServer.js";
 const port = Number(process.env.MCP_HTTP_PORT || 8788);
 const app = express();
 app.use(express.json({ limit: "1mb" }));
-const transports = {};
+// Map of sessionId → { transport, server } — keeps McpServer alive for the full session lifetime.
+const sessions = {};
 
 // Singleton store — shared across all sessions so data persists between connections.
 const store = createGraphStore();
@@ -26,23 +27,22 @@ app.post("/mcp", async (req, res) => {
   try {
     let transport;
 
-    if (sessionId && transports[sessionId]) {
-      transport = transports[sessionId];
-      await transport.handleRequest(req, res, req.body);
+    if (sessionId && sessions[sessionId]) {
+      await sessions[sessionId].transport.handleRequest(req, res, req.body);
       return;
     }
 
     if (!sessionId && isInitializeRequest(req.body)) {
-      transport = new StreamableHTTPServerTransport({
+      const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (initializedSessionId) => {
-          transports[initializedSessionId] = transport;
+          sessions[initializedSessionId] = { transport, server };
         },
       });
 
       transport.onclose = () => {
         const sid = transport.sessionId;
-        if (sid && transports[sid]) delete transports[sid];
+        if (sid && sessions[sid]) delete sessions[sid];
       };
 
       const server = createMcpServer(service);
@@ -69,20 +69,20 @@ app.post("/mcp", async (req, res) => {
 
 app.get("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
-  if (!sessionId || !transports[sessionId]) {
+  if (!sessionId || !sessions[sessionId]) {
     res.status(400).send("Invalid or missing session ID");
     return;
   }
-  await transports[sessionId].handleRequest(req, res);
+  await sessions[sessionId].transport.handleRequest(req, res);
 });
 
 app.delete("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
-  if (!sessionId || !transports[sessionId]) {
+  if (!sessionId || !sessions[sessionId]) {
     res.status(400).send("Invalid or missing session ID");
     return;
   }
-  await transports[sessionId].handleRequest(req, res);
+  await sessions[sessionId].transport.handleRequest(req, res);
 });
 
 app.listen(port, "0.0.0.0", () => {
